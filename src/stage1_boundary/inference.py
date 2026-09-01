@@ -17,7 +17,7 @@ from src.utils.io_utils import save_json, segments_path_for
 
 
 def load_stage1_model(checkpoint_path: str, device: str = "cpu") -> PedagogicalBoundaryDetector:
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     cfg = ckpt["config"]
     model = PedagogicalBoundaryDetector(**cfg).to(device)
     model.load_state_dict(ckpt["model_state_dict"])

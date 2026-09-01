@@ -27,6 +27,24 @@ import torch
 import torch.nn as nn
 
 
+class ZScoreNorm(nn.Module):
+    """Z-score normalization across the batch dimension.
+
+    Normalizes each modality embedding to zero mean and unit variance before
+    fusion. This prevents dominant modalities (e.g., text features with larger
+    magnitudes) from overpowering weaker modalities (e.g., visual/audio vectors)
+    in the cross-attention fusion step.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.size(0) <= 1:
+            # Can't compute meaningful statistics for batch size 1
+            return x
+        mean = x.mean(dim=0, keepdim=True)
+        std = x.std(dim=0, keepdim=True) + 1e-8
+        return (x - mean) / std
+
+
 class SegmentFusionEncoder(nn.Module):
     def __init__(self, ocr_dim: int, transcript_dim: int, visual_dim: int,
                  hidden_dim: int = 384, out_dim: int = 384,
@@ -38,6 +56,11 @@ class SegmentFusionEncoder(nn.Module):
         self.ocr_proj = nn.Linear(ocr_dim, hidden_dim)
         self.transcript_proj = nn.Linear(transcript_dim, hidden_dim)
         self.visual_proj = nn.Linear(visual_dim, hidden_dim)
+
+        # Z-score normalization applied after projection, before fusion.
+        # This calibrates all modalities to comparable magnitudes so that
+        # no single modality dominates the cross-attention scores.
+        self.zscore_norm = ZScoreNorm()
 
         # Learned modality-type embeddings (added so attention can
         # distinguish the OCR/transcript/visual tokens).
@@ -68,9 +91,15 @@ class SegmentFusionEncoder(nn.Module):
     def forward(self, ocr_emb: torch.Tensor, transcript_emb: torch.Tensor,
                 visual_emb: torch.Tensor) -> torch.Tensor:
         """All inputs: (B, modality_dim) -> output: (B, out_dim), L2-normalized."""
-        ocr_h = self.ocr_proj(ocr_emb) + self.modality_embed[0]
-        trans_h = self.transcript_proj(transcript_emb) + self.modality_embed[1]
-        vis_h = self.visual_proj(visual_emb) + self.modality_embed[2]
+        # Project each modality to shared hidden dimension
+        ocr_h = self.ocr_proj(ocr_emb)
+        trans_h = self.transcript_proj(transcript_emb)
+        vis_h = self.visual_proj(visual_emb)
+
+        # Z-score normalize to calibrate modality magnitudes
+        ocr_h = self.zscore_norm(ocr_h) + self.modality_embed[0]
+        trans_h = self.zscore_norm(trans_h) + self.modality_embed[1]
+        vis_h = self.zscore_norm(vis_h) + self.modality_embed[2]
 
         if self.fusion_mode == "cross_attention":
             tokens = torch.stack([ocr_h, trans_h, vis_h], dim=1)  # (B, 3, H)

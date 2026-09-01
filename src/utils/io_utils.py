@@ -53,3 +53,21 @@ def format_timestamp(seconds: float) -> str:
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
+
+def save_pt(path: str, data: dict):
+    """Save a dict of tensors/data to a PyTorch .pt file for offline caching.
+
+    This decouples heavy feature extraction (GPU-intensive) from model training,
+    eliminating CUDA Out-of-Memory crashes when both run simultaneously.
+    """
+    import torch
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    torch.save(data, path)
+
+
+def load_pt(path: str) -> dict:
+    """Load a cached PyTorch .pt feature file."""
+    import torch
+    return torch.load(path, map_location="cpu", weights_only=False)
+

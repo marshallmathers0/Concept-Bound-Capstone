@@ -121,6 +121,61 @@ def board_region(frame: np.ndarray, bbox: Optional[Tuple[float, float, float, fl
     return frame[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)]
 
 
+def compute_ssim(frame_a: np.ndarray, frame_b: np.ndarray) -> float:
+    """Compute Structural Similarity Index (SSIM) between two frames.
+
+    Uses OpenCV to compute a fast grayscale SSIM. Returns a value in [0, 1]
+    where 1.0 means the frames are identical.
+    """
+    import cv2
+
+    def _to_gray(f):
+        if f.ndim == 3:
+            return cv2.cvtColor(f, cv2.COLOR_RGB2GRAY)
+        return f
+
+    gray_a = _to_gray(frame_a)
+    gray_b = _to_gray(frame_b)
+
+    # Resize to match if shapes differ (shouldn't happen, but safety)
+    if gray_a.shape != gray_b.shape:
+        gray_b = cv2.resize(gray_b, (gray_a.shape[1], gray_a.shape[0]))
+
+    # Use cv2 matchTemplate with TM_CCOEFF_NORMED as a fast SSIM proxy,
+    # or compute proper SSIM via statistics.
+    c1 = (0.01 * 255) ** 2
+    c2 = (0.03 * 255) ** 2
+
+    a = gray_a.astype(np.float64)
+    b = gray_b.astype(np.float64)
+
+    mu_a = cv2.GaussianBlur(a, (11, 11), 1.5)
+    mu_b = cv2.GaussianBlur(b, (11, 11), 1.5)
+
+    mu_a_sq = mu_a ** 2
+    mu_b_sq = mu_b ** 2
+    mu_ab = mu_a * mu_b
+
+    sigma_a_sq = cv2.GaussianBlur(a ** 2, (11, 11), 1.5) - mu_a_sq
+    sigma_b_sq = cv2.GaussianBlur(b ** 2, (11, 11), 1.5) - mu_b_sq
+    sigma_ab = cv2.GaussianBlur(a * b, (11, 11), 1.5) - mu_ab
+
+    ssim_map = ((2 * mu_ab + c1) * (2 * sigma_ab + c2)) / \
+               ((mu_a_sq + mu_b_sq + c1) * (sigma_a_sq + sigma_b_sq + c2))
+
+    return float(np.mean(ssim_map))
+
+
+def ssim_gate(prev_frame: np.ndarray, curr_frame: np.ndarray,
+              threshold: float = 0.95) -> bool:
+    """Return True if the frames are similar enough to SKIP OCR.
+
+    When SSIM >= threshold (default 0.95, i.e. <5% visual change),
+    the board/slide is considered unchanged and OCR can be skipped.
+    """
+    return compute_ssim(prev_frame, curr_frame) >= threshold
+
+
 def text_change_rate(prev_text: str, curr_text: str) -> float:
     """Compute a normalized text-change score in [0, 1].
 

@@ -31,3 +31,7 @@ pydantic>=2.6
 
 # Plotting (for evaluation reports)
 matplotlib>=3.8
+
+# Text processing (hybrid topic drift, BM25 fallback)
+scikit-learn>=1.3
+rank-bm25>=0.2.2

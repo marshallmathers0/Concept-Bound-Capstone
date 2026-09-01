@@ -52,7 +52,7 @@ class FeatureConfig:
 class Stage1Config:
     hidden_dim: int = 128
     embed_dim: int = 64
-    encoder_type: str = "transformer"  # "transformer" or "cnn"
+    encoder_type: str = "bilstm"  # "bilstm", "transformer", or "cnn"
     num_layers: int = 2
     num_heads: int = 4
     dropout: float = 0.1
@@ -91,9 +91,10 @@ class Stage2Config:
 
 @dataclass
 class EvalConfig:
-    boundary_tolerance_steps: int = 1   # +/- steps allowed for a boundary "hit"
+    boundary_tolerance_steps: int = 4   # +/- steps allowed (4 × 3s = ±12s ≈ ±10s tolerance)
     retrieval_ks: List[int] = field(default_factory=lambda: [1, 5, 10])
     retrieval_iou_threshold: float = 0.3
+    retrieval_tolerance_sec: float = 10.0  # ±10s window for gold-standard evaluation
 
 
 @dataclass

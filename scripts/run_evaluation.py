@@ -135,6 +135,70 @@ def evaluate_stage2(video_ids, args):
         print(f"  sliding_window     : " + "  ".join(f"{k}={v:.3f}" for k, v in sw_metrics.items()))
 
 
+def evaluate_gold_standard(args):
+    """Evaluate retrieval on human-annotated gold-standard annotations.
+
+    Gold annotations are loaded from data/annotations/gold_standard/<video_id>_gold.json
+    and evaluated with ±tolerance_sec (default ±10s).
+    """
+    gold_dir = os.path.join(PATHS.annotations_dir, "gold_standard")
+    gold_files = sorted(glob.glob(os.path.join(gold_dir, "*_gold.json")))
+
+    if not gold_files:
+        print(f"\n[Gold Standard] No annotation files found in {gold_dir}")
+        print(f"  Create annotations following the template in {gold_dir}/README.md")
+        return
+
+    if not os.path.exists(os.path.join(args.index_dir, "segments.index")):
+        print(f"\n[Gold Standard] FAISS index not found in {args.index_dir}, skipping.")
+        return
+
+    retriever = LectureRetriever(args.index_dir, args.stage2_checkpoint, args.device)
+
+    retrieved_all, ground_truth_all = [], []
+    source_counts = {"nptel": 0, "local": 0, "other": 0}
+
+    for gold_path in gold_files:
+        ann = load_json(gold_path)
+        video_id = ann.get("video_id", os.path.basename(gold_path).replace("_gold.json", ""))
+        source = ann.get("source", "other")
+
+        # Filter by split if specified
+        if args.split and args.split != source:
+            continue
+
+        source_counts[source] = source_counts.get(source, 0) + len(ann.get("annotations", []))
+
+        for item in ann.get("annotations", []):
+            results = retriever.search(item["query"], top_k=max(EVAL.retrieval_ks))
+            retrieved_all.append(results)
+            ground_truth_all.append({
+                "video_id": video_id,
+                "start_time": item["start_time"],
+                "end_time": item["end_time"],
+            })
+
+    if not retrieved_all:
+        print(f"\n[Gold Standard] No queries found (split={args.split or 'all'})")
+        return
+
+    tolerance = EVAL.retrieval_tolerance_sec
+    metrics = evaluate_retrieval(retrieved_all, ground_truth_all,
+                                  tolerance_sec=tolerance)
+
+    from src.evaluation.retrieval_metrics import precision_recall_f1
+    prf = precision_recall_f1(retrieved_all, ground_truth_all,
+                               tolerance_sec=tolerance)
+
+    print(f"\n=== Gold-Standard Evaluation (±{tolerance:.0f}s tolerance) ===")
+    split_label = f" [{args.split}]" if args.split else ""
+    print(f"  Queries: {len(ground_truth_all)}{split_label}")
+    print(f"  Sources: " + ", ".join(f"{k}={v}" for k, v in source_counts.items() if v > 0))
+    print(f"  " + "  ".join(f"{k}={v:.3f}" for k, v in metrics.items()))
+    print(f"  Precision={prf['precision']:.3f}  Recall={prf['recall']:.3f}  "
+          f"F1={prf['f1']:.3f}  (TP={prf['tp']} FP={prf['fp']} FN={prf['fn']})")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--features-dir", default=PATHS.features_dir)
@@ -145,6 +209,10 @@ def main():
                          help="Fixed boundary-score threshold. Default: adaptive (mean + std).")
     parser.add_argument("--fixed-window-sec", type=float, default=60.0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--gold-standard", action="store_true",
+                         help="Evaluate on gold-standard human annotations with ±10s tolerance.")
+    parser.add_argument("--split", choices=["nptel", "local"], default=None,
+                         help="Evaluate only on a specific data source split (nptel=train, local=test).")
     args = parser.parse_args()
 
     ensure_dirs()
@@ -156,6 +224,10 @@ def main():
     evaluate_stage1(video_ids, args)
     evaluate_stage2(video_ids, args)
 
+    if args.gold_standard:
+        evaluate_gold_standard(args)
+
 
 if __name__ == "__main__":
     main()
+

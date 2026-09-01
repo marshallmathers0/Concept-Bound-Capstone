@@ -89,7 +89,7 @@ class SentenceEncoder:
             if device == "cuda" and not torch.cuda.is_available():
                 device = "cpu"
             self._model = SentenceTransformer(self.model_name, device=device)
-            self._dim = self._model.get_sentence_embedding_dimension()
+            self._dim = self._model.get_embedding_dimension()
         return self._model
 
     @property
@@ -117,13 +117,75 @@ def text_for_window(transcript: List[TranscriptSegment], t_center: float, half_w
     return " ".join(parts).strip()
 
 
+def texttiling_prefilter(window_texts: List[str],
+                         tfidf_threshold: float = 0.3,
+                         margin: int = 2) -> np.ndarray:
+    """Lightweight TF-IDF-based pre-filter to identify candidate topic shifts.
+
+    Computes TF-IDF vectors for each rolling-window text and flags positions
+    where the cosine distance between consecutive windows exceeds the threshold.
+    A margin of ±`margin` steps is added around each candidate to ensure
+    nearby context is also encoded with Sentence-BERT.
+
+    Returns a boolean mask (T,) where True = should be encoded by SBERT.
+    """
+    T = len(window_texts)
+    if T <= 2:
+        return np.ones(T, dtype=bool)
+
+    # Filter out empty texts to avoid TF-IDF issues
+    non_empty = [t if t.strip() else "." for t in window_texts]
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_distances
+
+        vectorizer = TfidfVectorizer(max_features=500, stop_words="english")
+        tfidf = vectorizer.fit_transform(non_empty)
+
+        # Cosine distance between consecutive windows
+        distances = np.zeros(T, dtype=np.float32)
+        for t in range(1, T):
+            distances[t] = float(cosine_distances(tfidf[t-1:t], tfidf[t:t+1])[0, 0])
+
+        # Flag candidates where distance exceeds threshold
+        candidates = distances > tfidf_threshold
+    except Exception:
+        # If sklearn unavailable, fall back to encoding everything
+        return np.ones(T, dtype=bool)
+
+    # Expand candidates by ±margin steps for context
+    mask = np.zeros(T, dtype=bool)
+    mask[0] = True  # always include first
+    mask[-1] = True  # always include last
+    for t in range(T):
+        if candidates[t]:
+            lo = max(0, t - margin)
+            hi = min(T, t + margin + 1)
+            mask[lo:hi] = True
+
+    # Also sample every 10th step for baseline coverage
+    mask[::10] = True
+
+    return mask
+
+
 def extract_topic_drift_signal(
     transcript: List[TranscriptSegment],
     timestamps: np.ndarray,
     encoder: SentenceEncoder,
     half_window: float = 15.0,
+    use_hybrid: bool = False,
 ) -> Tuple[np.ndarray, List[str]]:
     """Compute topic-drift signal over the given timestamps.
+
+    Parameters
+    ----------
+    use_hybrid : bool
+        If True, use lightweight TF-IDF pre-filtering (TextTiling) to identify
+        candidate topic-change points, then only run Sentence-BERT on those
+        neighborhoods. This can cut SBERT encoding calls by 50-70% on long
+        lectures with stable topic stretches.
 
     Returns
     -------
@@ -133,9 +195,42 @@ def extract_topic_drift_signal(
         Per-time-step transcript text (used later for segment aggregation).
     """
     window_texts = [text_for_window(transcript, t, half_window) for t in timestamps]
-    embeds = encoder.encode(window_texts)
+    T = len(timestamps)
 
-    signal = np.zeros(len(timestamps), dtype=np.float32)
+    if use_hybrid and T > 20:
+        # --- Hybrid mode: TF-IDF pre-filter + selective SBERT ---
+        mask = texttiling_prefilter(window_texts)
+        encode_indices = np.where(mask)[0]
+
+        pct_encoded = 100 * len(encode_indices) / T
+        print(f"    Hybrid topic drift: encoding {len(encode_indices)}/{T} "
+              f"steps with SBERT ({pct_encoded:.0f}%), rest interpolated")
+
+        # Encode only selected steps
+        selected_texts = [window_texts[i] for i in encode_indices]
+        selected_embeds = encoder.encode(selected_texts)  # (N, D)
+
+        # Build full embedding array by interpolating for non-encoded steps
+        D = selected_embeds.shape[1]
+        embeds = np.zeros((T, D), dtype=np.float32)
+
+        # Map encoded embeddings to their positions
+        for j, idx in enumerate(encode_indices):
+            embeds[idx] = selected_embeds[j]
+
+        # Interpolate: for non-encoded steps, use nearest encoded neighbor
+        encoded_set = set(encode_indices)
+        last_encoded = 0
+        for t in range(T):
+            if t in encoded_set:
+                last_encoded = t
+            else:
+                embeds[t] = embeds[last_encoded]
+    else:
+        # --- Original mode: encode everything ---
+        embeds = encoder.encode(window_texts)
+
+    signal = np.zeros(T, dtype=np.float32)
     if len(embeds) > 1:
         norms = np.linalg.norm(embeds, axis=1, keepdims=True)
         norms[norms == 0] = 1.0

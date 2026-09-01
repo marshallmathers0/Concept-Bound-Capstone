@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=STAGE1.epochs)
     parser.add_argument("--batch-size", type=int, default=STAGE1.batch_size)
     parser.add_argument("--lr", type=float, default=STAGE1.lr)
-    parser.add_argument("--encoder-type", default=STAGE1.encoder_type, choices=["cnn", "transformer"])
+    parser.add_argument("--encoder-type", default=STAGE1.encoder_type, choices=["cnn", "transformer", "bilstm"])
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
