@@ -32,7 +32,7 @@ from src.utils.io_utils import save_json
 
 
 def load_stage2_model(checkpoint_path: str, device: str = "cpu") -> CrossModalRetrievalModel:
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model = CrossModalRetrievalModel(**ckpt["config"]).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()

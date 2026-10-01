@@ -92,7 +92,7 @@ class Stage2Config:
 @dataclass
 class EvalConfig:
     boundary_tolerance_steps: int = 4   # +/- steps allowed (4 × 3s = ±12s ≈ ±10s tolerance)
-    retrieval_ks: List[int] = field(default_factory=lambda: [1, 5, 10])
+    retrieval_ks: List[int] = field(default_factory=lambda: [1, 3, 5])
     retrieval_iou_threshold: float = 0.3
     retrieval_tolerance_sec: float = 10.0  # ±10s window for gold-standard evaluation
 
