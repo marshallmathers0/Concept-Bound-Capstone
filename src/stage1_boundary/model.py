@@ -126,15 +126,34 @@ class BiLSTMBoundaryEncoder(nn.Module):
         return self.proj(output)
 
 
+# Column layout of the per-step feature vector (see feature_pipeline.py).
+SIGNAL_COLUMNS = {"ocr": [0], "drift": [1], "visual": [2]}  # "clip" = columns 3..D-1
+
+
+def signal_mask(input_dim: int, drop_signals=()) -> torch.Tensor:
+    """(input_dim,) 0/1 mask that zeroes the given input signals."""
+    mask = torch.ones(input_dim)
+    for name in drop_signals:
+        cols = list(range(3, input_dim)) if name == "clip" else SIGNAL_COLUMNS[name]
+        mask[cols] = 0.0
+    return mask
+
+
 class PedagogicalBoundaryDetector(nn.Module):
     """Wraps a CNN, Transformer, or Bi-LSTM backbone and L2-normalizes the
-    output embeddings so that cosine similarity reduces to a dot product."""
+    output embeddings so that cosine similarity reduces to a dot product.
+
+    `drop_signals` (any of "ocr", "drift", "visual", "clip") zeroes those
+    input channels, for the signal-removal ablation. The mask is a buffer, so
+    it is saved in the checkpoint and applied identically at inference.
+    """
 
     def __init__(self, input_dim: int, hidden_dim: int = 128, embed_dim: int = 64,
                  encoder_type: str = "bilstm", num_layers: int = 2,
-                 num_heads: int = 4, dropout: float = 0.1):
+                 num_heads: int = 4, dropout: float = 0.1, drop_signals=()):
         super().__init__()
         self.encoder_type = encoder_type
+        self.register_buffer("input_mask", signal_mask(input_dim, drop_signals))
         if encoder_type == "cnn":
             self.backbone = CNNBoundaryEncoder(input_dim, hidden_dim, embed_dim,
                                                 num_layers=num_layers, dropout=dropout)
@@ -150,6 +169,7 @@ class PedagogicalBoundaryDetector(nn.Module):
 
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor = None) -> torch.Tensor:
         """x: (B, T, D) -> z: (B, T, embed_dim), L2-normalized along last dim."""
+        x = x * self.input_mask
         if self.encoder_type in ("transformer", "bilstm"):
             z = self.backbone(x, key_padding_mask=key_padding_mask)
         else:

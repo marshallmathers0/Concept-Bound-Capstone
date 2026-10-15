@@ -3,10 +3,21 @@ PyTorch Dataset for Stage-1 boundary-detector training.
 
 Each item corresponds to one lecture video's feature stream
 (`data/features/<video_id>.npz`, produced by
-`src.feature_extraction.feature_pipeline`). Pseudo-labels are computed on the
-fly from the OCR / topic-drift / visual signals; if a manual annotation file
-exists for the video (`data/annotations/<video_id>_boundaries.json`,
-containing a list of boundary timestamps in seconds), it is merged in.
+`src.feature_extraction.feature_pipeline`).
+
+Where the boundary labels come from is controlled by `label_source`:
+
+  - "gold":   human boundaries from data/annotations/gold/ only. Videos
+              without gold are skipped.
+  - "pseudo": peaks of the OCR / topic-drift / visual signals for every video.
+              These are derived from the model's own input features, so a
+              model trained only on them can at best re-learn the heuristic.
+              Never report pseudo-label agreement as accuracy.
+  - "auto":   gold where a video has it, pseudo elsewhere (default).
+
+For videos with gold annotations the sequence is cropped to the annotated
+`lecture_span`, so dead air before/after the lecture is not labelled as one
+giant segment.
 
 Because lecture videos vary in length, the dataset returns full sequences and
 a custom `collate_fn` pads them to the same length within a batch (with a
@@ -22,52 +33,75 @@ from torch.utils.data import Dataset
 
 from config import PATHS
 from src.feature_extraction.feature_pipeline import load_feature_stream
-from src.utils.io_utils import load_json
+from src.utils.gold import load_gold
 from src.stage1_boundary.pseudo_labels import (
     pseudo_boundaries_from_signals,
     boundaries_from_annotations,
-    merge_boundary_labels,
     boundaries_to_segment_ids,
 )
+
+LABEL_SOURCES = ("auto", "gold", "pseudo")
+
+
+def span_mask(timestamps: np.ndarray, gold: Optional[dict]) -> np.ndarray:
+    """Boolean (T,) mask of time-steps inside the gold `lecture_span`."""
+    if gold is None or not gold.get("lecture_span"):
+        return np.ones(len(timestamps), dtype=bool)
+    lo, hi = gold["lecture_span"]
+    return (timestamps >= lo) & (timestamps < hi)
+
+
+def labels_for_video(feats: dict, gold: Optional[dict], label_source: str):
+    """Return (keep_mask, is_boundary over kept steps, source_used)."""
+    timestamps = feats["timestamps"].astype(np.float32)
+    if label_source in ("auto", "gold") and gold is not None:
+        keep = span_mask(timestamps, gold)
+        is_boundary = boundaries_from_annotations(timestamps[keep], gold["boundaries_sec"])
+        return keep, is_boundary, "gold"
+    if label_source == "gold":
+        return None, None, None
+    keep = np.ones(len(timestamps), dtype=bool)
+    is_boundary = pseudo_boundaries_from_signals(
+        feats["ocr_signal"].astype(np.float32),
+        feats["topic_drift_signal"].astype(np.float32),
+        feats["visual_signal"].astype(np.float32),
+    )
+    return keep, is_boundary, "pseudo"
 
 
 class BoundaryDataset(Dataset):
     def __init__(self, video_ids: List[str], features_dir: str = PATHS.features_dir,
-                 annotations_dir: str = PATHS.annotations_dir):
-        self.video_ids = video_ids
+                 label_source: str = "auto"):
+        if label_source not in LABEL_SOURCES:
+            raise ValueError(f"label_source must be one of {LABEL_SOURCES}")
         self.features_dir = features_dir
-        self.annotations_dir = annotations_dir
+        self.label_source = label_source
+        self.items = []
+        self.sources = {}
+        for video_id in video_ids:
+            feats = load_feature_stream(os.path.join(features_dir, f"{video_id}.npz"))
+            keep, is_boundary, used = labels_for_video(feats, load_gold(video_id), label_source)
+            if used is None:
+                continue
+            self.items.append((video_id, feats["features"][keep], feats["timestamps"][keep], is_boundary))
+            self.sources[video_id] = used
+
+    @property
+    def video_ids(self):
+        return [it[0] for it in self.items]
 
     def __len__(self):
-        return len(self.video_ids)
+        return len(self.items)
 
     def __getitem__(self, idx):
-        video_id = self.video_ids[idx]
-        feats = load_feature_stream(os.path.join(self.features_dir, f"{video_id}.npz"))
-
-        features = feats["features"]  # (T, D)
-        timestamps = feats["timestamps"].astype(np.float32)
-        ocr_signal = feats["ocr_signal"].astype(np.float32)
-        topic_drift = feats["topic_drift_signal"].astype(np.float32)
-        visual_signal = feats["visual_signal"].astype(np.float32)
-
-        pseudo = pseudo_boundaries_from_signals(ocr_signal, topic_drift, visual_signal)
-
-        manual = None
-        ann_path = os.path.join(self.annotations_dir, f"{video_id}_boundaries.json")
-        if os.path.exists(ann_path):
-            ann = load_json(ann_path)
-            manual = boundaries_from_annotations(timestamps, ann.get("boundary_times_sec", []))
-
-        is_boundary = merge_boundary_labels(pseudo, manual)
+        video_id, features, timestamps, is_boundary = self.items[idx]
         seg_ids = boundaries_to_segment_ids(is_boundary)
-
         return {
             "video_id": video_id,
-            "features": torch.from_numpy(features),
+            "features": torch.from_numpy(np.ascontiguousarray(features, dtype=np.float32)),
             "is_boundary": torch.from_numpy(is_boundary).long(),
             "seg_ids": torch.from_numpy(seg_ids).long(),
-            "timestamps": torch.from_numpy(timestamps),
+            "timestamps": torch.from_numpy(timestamps.astype(np.float32)),
         }
 
 

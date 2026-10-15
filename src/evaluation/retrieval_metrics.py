@@ -126,3 +126,51 @@ def evaluate_retrieval(retrieved: List[List[Dict]], ground_truth: List[Dict],
         metrics.update({f"gold_{k}": v for k, v in prf.items() if isinstance(v, float)})
 
     return metrics
+
+
+def first_hit_rank(results: List[Dict], gt: Dict, iou_threshold: float = EVAL.retrieval_iou_threshold):
+    """1-based rank of the first result overlapping the gold moment with
+    IoU >= threshold, or None."""
+    for rank, r in enumerate(results, start=1):
+        if r["video_id"] == gt["video_id"] and \
+                temporal_iou(r["start_time"], r["end_time"], gt["start_time"], gt["end_time"]) >= iou_threshold:
+            return rank
+    return None
+
+
+def per_query_metrics(results: List[Dict], gt: Dict, ks=None) -> Dict[str, float]:
+    """Metrics for one query; average these over queries (and bootstrap them)."""
+    ks = ks or EVAL.retrieval_ks
+    rank = first_hit_rank(results, gt, EVAL.retrieval_iou_threshold)
+    rank50 = first_hit_rank(results, gt, 0.5)
+    top = results[0] if results else None
+    iou1 = (temporal_iou(top["start_time"], top["end_time"], gt["start_time"], gt["end_time"])
+            if top is not None and top["video_id"] == gt["video_id"] else 0.0)
+    m = {f"R@{k}": float(rank is not None and rank <= k) for k in ks}
+    m["R@1_iou0.5"] = float(rank50 == 1)
+    m["MRR"] = 1.0 / rank if rank else 0.0
+    m["mIoU@1"] = iou1
+    m["video_hit@1"] = float(top is not None and top["video_id"] == gt["video_id"])
+    return m
+
+
+def bootstrap_ci(values: List[float], n_boot: int = 2000, alpha: float = 0.05, seed: int = 0):
+    """Percentile bootstrap (mean, lo, hi) over per-query values."""
+    vals = np.asarray(values, dtype=np.float64)
+    if len(vals) == 0:
+        return 0.0, 0.0, 0.0
+    rng = np.random.default_rng(seed)
+    means = vals[rng.integers(0, len(vals), size=(n_boot, len(vals)))].mean(axis=1)
+    return float(vals.mean()), float(np.quantile(means, alpha / 2)), float(np.quantile(means, 1 - alpha / 2))
+
+
+def paired_bootstrap_pvalue(a: List[float], b: List[float], n_boot: int = 5000, seed: int = 0) -> float:
+    """One-sided p-value that system A is not better than B on the same queries
+    (paired bootstrap over queries)."""
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    if len(a) == 0:
+        return 1.0
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(a), size=(n_boot, len(a)))
+    diffs = (a[idx] - b[idx]).mean(axis=1)
+    return float((diffs <= 0).mean())

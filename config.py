@@ -11,16 +11,27 @@ from dataclasses import dataclass, field
 from typing import List
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# Override for tests / alternative datasets: LECTURE_DATA_ROOT replaces data/,
+# LECTURE_OUTPUT_ROOT holds checkpoints/ and results/.
+DATA_ROOT = os.environ.get("LECTURE_DATA_ROOT", os.path.join(PROJECT_ROOT, "data"))
+OUTPUT_ROOT = os.environ.get("LECTURE_OUTPUT_ROOT", PROJECT_ROOT)
 
 
 @dataclass
 class PathConfig:
-    raw_videos_dir: str = os.path.join(PROJECT_ROOT, "data", "raw_videos")
-    features_dir: str = os.path.join(PROJECT_ROOT, "data", "features")
-    segments_dir: str = os.path.join(PROJECT_ROOT, "data", "segments")
-    index_dir: str = os.path.join(PROJECT_ROOT, "data", "index")
-    annotations_dir: str = os.path.join(PROJECT_ROOT, "data", "annotations")
-    checkpoints_dir: str = os.path.join(PROJECT_ROOT, "checkpoints")
+    raw_videos_dir: str = os.path.join(DATA_ROOT, "raw_videos")
+    features_dir: str = os.path.join(DATA_ROOT, "features")
+    segments_dir: str = os.path.join(DATA_ROOT, "segments")
+    index_dir: str = os.path.join(DATA_ROOT, "index")
+    annotations_dir: str = os.path.join(DATA_ROOT, "annotations")
+    checkpoints_dir: str = os.path.join(OUTPUT_ROOT, "checkpoints")
+    # Human gold annotations: data/annotations/gold/<video_id>.<annotator>.json
+    gold_dir: str = os.path.join(DATA_ROOT, "annotations", "gold")
+    # Video-level train/val/test split (never split by segment - that leaks).
+    splits_path: str = os.path.join(DATA_ROOT, "splits.json")
+    # Optional per-video OCR crop overrides: {"<video_id>": [x0, y0, x1, y1]}
+    ocr_regions_path: str = os.path.join(DATA_ROOT, "ocr_regions.json")
+    results_dir: str = os.path.join(OUTPUT_ROOT, "results")
 
 
 @dataclass
@@ -73,6 +84,11 @@ class Stage1Config:
     boundary_threshold: float = 0.5  # used only if an absolute threshold is explicitly requested
     adaptive_threshold_std: float = 1.0  # default: mean + std * adaptive_threshold_std
     min_segment_len_steps: int = 3
+    # Concept segments in a lecture are minutes long, not seconds. Segments
+    # shorter than min_segment_sec are merged; longer than max_segment_sec are
+    # split at their strongest internal boundary score.
+    min_segment_sec: float = 60.0
+    max_segment_sec: float = 600.0
 
 
 @dataclass
@@ -91,8 +107,8 @@ class Stage2Config:
 
 @dataclass
 class EvalConfig:
-    boundary_tolerance_steps: int = 4   # +/- steps allowed (4 × 3s = ±12s ≈ ±10s tolerance)
-    retrieval_ks: List[int] = field(default_factory=lambda: [1, 3, 5])
+    boundary_tolerance_steps: int = 5   # +/- steps allowed (5 x 3s = +/-15s)
+    retrieval_ks: List[int] = field(default_factory=lambda: [1, 5, 10])
     retrieval_iou_threshold: float = 0.3
     retrieval_tolerance_sec: float = 10.0  # ±10s window for gold-standard evaluation
 
@@ -103,6 +119,9 @@ class ModelNames:
     clip_model: str = "openai/clip-vit-base-patch32"
     whisper_model: str = "base"
     ocr_engine: str = "easyocr"  # "easyocr" or "tesseract"
+    # Off-the-shelf dense retriever used as a strong text baseline.
+    dense_baseline: str = "BAAI/bge-small-en-v1.5"
+    cross_encoder: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 PATHS = PathConfig()
@@ -121,6 +140,8 @@ def ensure_dirs():
         PATHS.index_dir,
         PATHS.annotations_dir,
         PATHS.checkpoints_dir,
+        PATHS.gold_dir,
+        PATHS.results_dir,
     ]:
         os.makedirs(d, exist_ok=True)
 

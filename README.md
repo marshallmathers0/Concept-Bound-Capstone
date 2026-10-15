@@ -93,8 +93,14 @@ $env:PYTHONPATH = Resolve-Path .
 
 ## 4. End-to-end pipeline (real lecture videos)
 
+> **Ground rule:** results are only ever reported on **human gold
+> annotations** of **held-out test lectures**. Pseudo-labels and
+> pseudo-queries are training signal only: they are built from the system's
+> own inputs, so scoring against them measures nothing.
+
 ### Step 0 — Place videos
-Put your NPTEL / YouTube lecture `.mp4` files in `data/raw_videos/`.
+Put the recorded lecture files (`.mp4/.mkv/.avi/.mov/.webm`) in
+`data/raw_videos/`. Make sure you have written permission to use them.
 
 ### Step 1 — Feature extraction
 ```bash
@@ -102,89 +108,113 @@ python scripts/extract_features.py
 ```
 For each video, samples frames every `FEATURES.time_step_sec` (default 3s)
 and computes:
-- OCR text-change rate (EasyOCR/Tesseract on the board/slide region)
-- ASR transcript + topic-drift signal (Whisper + Sentence-BERT)
+- OCR text + text-change rate (EasyOCR on the **projected screen**, found
+  automatically per 5-minute chunk; override per video in
+  `data/ocr_regions.json` as `{"<video_id>": [x0, y0, x1, y1]}` in 0–1 units)
+- ASR transcript (Whisper, with hallucination filtering) + topic-drift signal
 - Visual-change rate (optical flow)
 - CLIP image embedding of the sampled frame
 
-Output: `data/features/<video_id>.npz`
+Output: `data/features/<video_id>.npz`, including the raw Whisper segments
+(`asr_segments`) and a `provenance` record (OCR engine, crop source, OCR
+coverage, Whisper model).
 
-### Step 2 — Annotate ground truth (for training/eval)
-For each video you want to use for training/evaluation, create:
+Extraction **fails loudly** if EasyOCR, Whisper or Sentence-BERT cannot load;
+there are no silent empty or random fallbacks. If EasyOCR's own model download
+stalls, fetch `craft_mlt_25k.zip` (release `pre-v1.1.6`) and
+`english_g2.zip` (release `v1.3`) from
+https://github.com/JaidedAI/EasyOCR/releases and unzip them into
+`~/.EasyOCR/model/`.
 
-`data/annotations/<video_id>_boundaries.json`
-```json
-{ "boundary_times_sec": [185.0, 612.0, 1450.0] }
-```
-
-`data/annotations/<video_id>_queries.json`
-```json
-{
-  "pairs": [
-    {"query": "explain backpropagation with an example", "start_time": 612.0, "end_time": 730.0},
-    {"query": "where is the cost function for linear regression defined?", "start_time": 60.0, "end_time": 185.0}
-  ]
-}
-```
-
-### Step 3 — Train Stage 1 (Pedagogical Boundary Detector)
+To fix already-extracted files (OCR/ASR only, CLIP is kept):
 ```bash
-python -m src.stage1_boundary.train --epochs 30 --encoder-type transformer
+python scripts/refresh_features.py --ocr --asr
 ```
-Saves the best checkpoint to `checkpoints/stage1_boundary_detector.pt`.
 
-### Step 4 — Segment all videos
+### Step 2 — Freeze a video-level split
+```bash
+python scripts/make_splits.py          # add --groups data/video_meta.json to split by course
+```
+Writes `data/splits.json`. All training scripts exclude the test videos.
+Never split by segment or query (neighbouring moments of one lecture would
+end up in both train and test).
+
+### Step 3 — Annotate gold data
+```bash
+python scripts/make_annotation_sheets.py --annotator A1
+python scripts/validate_annotations.py
+```
+Follow [docs/ANNOTATION_GUIDELINES.md](docs/ANNOTATION_GUIDELINES.md). Each
+annotator fills `data/annotations/gold/<video_id>.<annotator>.json`
+(lecture span, concept boundaries, student-style queries with time ranges).
+Double-annotate at least 20–25% of the videos. `validate_annotations.py`
+reports inter-annotator agreement in `results/annotation_report.md`.
+
+### Step 4 — Train Stage 1 (Pedagogical Boundary Detector)
+```bash
+python -m src.stage1_boundary.train --epochs 30 --encoder-type transformer --label-source auto
+```
+`--label-source auto` uses gold boundaries where a train video has them and
+pseudo-labels elsewhere (`gold` / `pseudo` force one). The checkpoint is
+selected by boundary F1 on gold val videos when they exist. Training logs go
+to `results/stage1_train_log.json`.
+
+### Step 5 — Segment all videos
 ```bash
 python scripts/segment_videos.py
 ```
-Writes `data/segments/<video_id>.json` with `[{start_idx, end_idx,
-start_time, end_time}, ...]`.
+Writes `data/segments/<video_id>.json`. Segments are kept between
+`STAGE1.min_segment_sec` (60s) and `STAGE1.max_segment_sec` (600s).
 
-### Step 5 — Compute per-segment Stage-2 features
+### Step 6 — Per-segment features and pseudo-queries
 ```bash
 python scripts/prepare_segment_features.py
-```
-Aggregates OCR/transcript text and CLIP embeddings per segment into
-`data/segments/<video_id>_segment_features.npz`.
-
-### (No manual annotations yet?) Generate pseudo-queries
-Stage 2 training requires `data/annotations/<video_id>_queries.json`. If you
-haven't written manual (query, segment) pairs yet, generate self-supervised
-pseudo-queries from each segment's own transcript/OCR text:
-```bash
 python scripts/generate_pseudo_queries.py
 ```
-This lets the full pipeline run end-to-end with zero manual work. It is a
-weaker training/eval signal than real student queries - replace these files
-with hand-written ones (Step 2 format above) whenever possible for a
-meaningful Recall@k evaluation. The script will not overwrite an existing
-`*_queries.json` (e.g. one you wrote by hand) unless you pass `--overwrite`.
+Pseudo-queries go to `data/annotations/<video_id>_pseudo_queries.json`
+(training only, never evaluated on).
 
-### Step 6 — Train Stage 2 (Segment Fusion Encoder + Query Projector)
+### Step 7 — Train Stage 2 (Segment Fusion Encoder + Query Projector)
 ```bash
 python -m src.stage2_retrieval.train --epochs 20 --fusion-mode cross_attention
 ```
-Saves the best checkpoint to `checkpoints/stage2_retrieval_model.pt`.
-Use `--fusion-mode concat` to run the concatenation-vs-cross-attention
-ablation described in the proposal.
+Add `--use-gold` to also train on gold queries of train-split videos. Use
+`--fusion-mode concat` for the fusion ablation.
 
-### Step 7 — Build the FAISS index
+### Step 8 — Build the FAISS index (for the demo app)
 ```bash
 python -m src.stage2_retrieval.index_builder
 ```
 
-### Step 8 — Evaluate against baselines
+### Step 9 — Evaluate
 ```bash
-python scripts/run_evaluation.py
+python scripts/run_evaluation.py --split val      # develop and tune here
+python scripts/run_evaluation.py --split test --rerank   # once, at the end
 ```
-Prints boundary F1 / mean IoU (Stage 1 vs. fixed-window vs. shot-detection)
-and Recall@1/5/10 / mean IoU@1 (Stage 2 vs. sliding-window retrieval).
+Compares, on gold data only:
+- **Segmentation:** Stage 1 vs the pseudo-label heuristic, TextTiling-style
+  topic drift, shot detection, and fixed 30/60/120s windows. Metrics: boundary
+  F1 at ±15s/±30s, Pk, WindowDiff, mean IoU.
+- **Retrieval:** every segmenter × {BM25, MiniLM, BGE, BM25+dense hybrid
+  (RRF), cross-encoder re-ranking, trained fusion model}, plus gold
+  segmentation as an oracle. Metrics: R@1/5/10, R@1 at IoU≥0.5, MRR,
+  mIoU@1, 95% bootstrap CIs, paired significance against fixed-60s BM25, and a
+  per-query-type breakdown.
 
-### Step 9 — Run the demo web app
+Each run writes `results/<run>/results.md`, `summary.json` and
+`per_query.jsonl` (rankings for error analysis).
+
+### Step 10 — Run the demo web app
 ```bash
 uvicorn app.backend.main:app --reload --port 8000
 ```
-Open `http://localhost:8000` and search.
+The demo uses `mode="auto"`, which falls back to BM25 + dense search when the
+neural scores look degenerate. Evaluation never uses that switch.
+
+### All in one
+```bash
+python scripts/run_full_pipeline.py
+```
 
 ---
 
@@ -264,10 +294,6 @@ uvicorn app.backend.main:app --reload --port 8000
   board/slide region via `src/feature_extraction/ocr_extractor.board_region`.
 
 
-
-  .\.venv\Scripts\python.exe scripts\run_full_pipeline.py --skip-training
-
-   uvicorn app.backend.main:app --reload --port 8000
 
 ---
 

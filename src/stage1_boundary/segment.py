@@ -6,8 +6,11 @@ Detector into a list of discrete, concept-coherent segments
   - peak-pick the boundary-score sequence using the same `find_peaks`
     machinery used for pseudo-labels (but on the *learned* score, not the
     raw signals)
-  - merge segments shorter than `min_segment_len_steps` into a neighbour,
-    so the output is robust to spurious single-step boundaries.
+  - enforce plausible concept-segment lengths: boundaries closer than
+    `min_segment_sec` are suppressed (the stronger one survives), and
+    segments longer than `max_segment_sec` are split at their strongest
+    internal score. Without this the detector produced 12-30 second
+    "concepts" next to 27-minute ones.
 """
 
 from typing import List, Dict
@@ -90,45 +93,73 @@ def boundaries_to_segments(
     return segments
 
 
+def enforce_segment_lengths(
+    candidate_idx: np.ndarray,
+    boundary_scores: np.ndarray,
+    min_steps: int,
+    max_steps: int,
+) -> np.ndarray:
+    """Length-constrained boundary selection.
+
+    1. Non-maximum suppression: visit candidates from strongest to weakest
+       score and keep one only if it is at least `min_steps` from every kept
+       boundary and from both ends of the video.
+    2. Split: while some segment is longer than `max_steps`, add a boundary
+       at its highest-scoring interior position (still `min_steps` from both
+       of its ends).
+
+    Indices follow the `boundary_scores` convention: t means a boundary
+    between time-step t and t+1, so the next segment starts at t+1.
+    """
+    n = len(boundary_scores)  # = T - 1
+    T = n + 1
+    kept: List[int] = []
+    for t in sorted((int(c) for c in candidate_idx), key=lambda c: -boundary_scores[c]):
+        start = t + 1
+        if start < min_steps or T - start < min_steps:
+            continue
+        if all(abs(start - (k + 1)) >= min_steps for k in kept):
+            kept.append(t)
+
+    changed = True
+    while changed:
+        changed = False
+        cuts = [0] + sorted(k + 1 for k in kept) + [T]
+        for a, b in zip(cuts[:-1], cuts[1:]):
+            if b - a <= max_steps:
+                continue
+            lo, hi = a + min_steps - 1, b - min_steps - 1  # allowed boundary index range
+            if hi < lo:
+                continue
+            t = lo + int(np.argmax(boundary_scores[lo:hi + 1]))
+            kept.append(t)
+            changed = True
+            break
+    return np.array(sorted(kept), dtype=np.int64)
+
+
 def segments_from_scores(
     boundary_scores: np.ndarray,
     timestamps: np.ndarray,
     threshold: float = None,
     min_distance: int = STAGE1.peak_min_distance_steps,
-    min_segment_len_steps: int = STAGE1.min_segment_len_steps,
     adaptive_std: float = STAGE1.adaptive_threshold_std,
-    time_step_sec: float = 3.0,
-    max_segment_duration_sec: float = 300.0,
+    min_segment_sec: float = STAGE1.min_segment_sec,
+    max_segment_sec: float = STAGE1.max_segment_sec,
 ) -> List[Dict]:
     """Convenience wrapper: scores -> boundary indices -> segment list.
 
-    `threshold=None` (default) uses the adaptive mean+std threshold — see
-    `boundary_scores_to_boundaries`.
-
-    If the model produces zero boundaries (e.g. undertrained model), a
-    fallback kicks in that splits the video at the top score peaks to
-    guarantee at most `max_segment_duration_sec` per segment.  This prevents
-    the degenerate case of one giant segment per video.
+    `threshold=None` (default) uses the adaptive mean+std threshold to pick
+    candidate peaks (see `boundary_scores_to_boundaries`); the candidates are
+    then filtered by `enforce_segment_lengths`.
     """
-    boundary_idx = boundary_scores_to_boundaries(boundary_scores, threshold, min_distance, adaptive_std)
-
-    # Fallback: if no boundaries found, force-split at the top score peaks
     T = len(timestamps)
-    video_duration_sec = T * time_step_sec if T > 1 else 0
-    min_segments = max(1, int(video_duration_sec / max_segment_duration_sec))
+    if T == 0:
+        return []
+    step = float(timestamps[1] - timestamps[0]) if T > 1 else 1.0
+    min_steps = max(1, int(round(min_segment_sec / step)))
+    max_steps = max(min_steps + 1, int(round(max_segment_sec / step)))
 
-    if len(boundary_idx) == 0 and min_segments > 1 and len(boundary_scores) > 0:
-        # Pick the top-scoring positions as forced boundaries
-        n_needed = min_segments - 1
-        # Only consider positions that are far enough apart
-        sorted_idx = np.argsort(-boundary_scores)
-        forced = []
-        for idx in sorted_idx:
-            # Check this position is far enough from all already-selected boundaries
-            if all(abs(int(idx) - f) >= min_distance for f in forced):
-                forced.append(int(idx))
-            if len(forced) >= n_needed:
-                break
-        boundary_idx = np.array(sorted(forced), dtype=np.int64)
-
-    return boundaries_to_segments(boundary_idx, timestamps, min_segment_len_steps)
+    candidates = boundary_scores_to_boundaries(boundary_scores, threshold, min_distance, adaptive_std)
+    boundary_idx = enforce_segment_lengths(candidates, boundary_scores, min_steps, max_steps)
+    return boundaries_to_segments(boundary_idx, timestamps, min_segment_len_steps=1)

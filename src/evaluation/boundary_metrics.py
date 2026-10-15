@@ -82,3 +82,55 @@ def evaluate_boundaries(pred_segments: List[Dict], gt_segments: List[Dict],
     miou = mean_segment_iou(pred_segments, gt_segments)
 
     return {**f1_metrics, "mean_iou": miou}
+
+
+def _segment_ids(boundary_idx: np.ndarray, total_steps: int) -> np.ndarray:
+    """(T,) segment id per time-step from boundary indices (boundary t lies
+    between steps t and t+1)."""
+    ids = np.zeros(total_steps, dtype=np.int64)
+    for b in sorted(int(x) for x in boundary_idx):
+        if 0 <= b < total_steps - 1:
+            ids[b + 1:] += 1
+    return ids
+
+
+def pk_windowdiff(pred_boundary_idx: np.ndarray, gt_boundary_idx: np.ndarray,
+                  total_steps: int, k: int = None) -> Dict[str, float]:
+    """Pk (Beeferman et al., 1999) and WindowDiff (Pevzner & Hearst, 2002),
+    the standard text/topic segmentation error rates (lower is better).
+
+    A window of `k` steps (default: half the mean gold segment length) slides
+    over the sequence; Pk counts windows where prediction and gold disagree on
+    whether the two ends are in the same segment, WindowDiff counts windows
+    where they disagree on the number of boundaries inside.
+    """
+    gt = _segment_ids(gt_boundary_idx, total_steps)
+    pred = _segment_ids(pred_boundary_idx, total_steps)
+    if k is None:
+        n_gt_segments = int(gt.max()) + 1
+        k = max(2, int(round(total_steps / n_gt_segments / 2)))
+    n = total_steps - k
+    if n <= 0:
+        return {"pk": 0.0, "windowdiff": 0.0, "k": k}
+    pk_err = wd_err = 0
+    for i in range(n):
+        pk_err += (gt[i] == gt[i + k]) != (pred[i] == pred[i + k])
+        wd_err += (gt[i + k] - gt[i]) != (pred[i + k] - pred[i])
+    return {"pk": pk_err / n, "windowdiff": wd_err / n, "k": k}
+
+
+def evaluate_boundaries_full(pred_segments: List[Dict], gt_segments: List[Dict],
+                             total_steps: int, tolerances=(5, 10)) -> Dict[str, float]:
+    """Boundary P/R/F1 at several tolerances (in steps), mean IoU, Pk and
+    WindowDiff, plus segment counts - everything Stage 1 reports."""
+    pred_b = np.array([s["end_idx"] for s in pred_segments[:-1]], dtype=np.int64) - 1
+    gt_b = np.array([s["end_idx"] for s in gt_segments[:-1]], dtype=np.int64) - 1
+    out = {}
+    for tol in tolerances:
+        m = boundary_f1(pred_b, gt_b, tol)
+        out.update({f"precision@{tol}": m["precision"], f"recall@{tol}": m["recall"], f"f1@{tol}": m["f1"]})
+    out["mean_iou"] = mean_segment_iou(pred_segments, gt_segments)
+    out.update({k: v for k, v in pk_windowdiff(pred_b, gt_b, total_steps).items() if k != "k"})
+    out["n_pred_segments"] = len(pred_segments)
+    out["n_gt_segments"] = len(gt_segments)
+    return out
