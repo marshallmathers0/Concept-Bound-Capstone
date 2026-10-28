@@ -46,16 +46,16 @@ from src.utils.text_search import bm25_tokenize
 # Segmenters
 # ---------------------------------------------------------------------------
 
-def _length_steps(timestamps):
+def _length_steps(timestamps, min_sec=STAGE1.min_segment_sec, max_sec=STAGE1.max_segment_sec):
     step = float(timestamps[1] - timestamps[0]) if len(timestamps) > 1 else 1.0
-    return (max(1, int(round(STAGE1.min_segment_sec / step))),
-            max(2, int(round(STAGE1.max_segment_sec / step))))
+    return (max(1, int(round(min_sec / step))), max(2, int(round(max_sec / step))))
 
 
-def _segments_from_signal(score: np.ndarray, candidates: np.ndarray, timestamps) -> List[Dict]:
+def _segments_from_signal(score: np.ndarray, candidates: np.ndarray, timestamps,
+                          min_sec=STAGE1.min_segment_sec, max_sec=STAGE1.max_segment_sec) -> List[Dict]:
     """Apply the same length constraints Stage 1 uses, so baselines are not
     handicapped by producing 9-second segments."""
-    min_steps, max_steps = _length_steps(timestamps)
+    min_steps, max_steps = _length_steps(timestamps, min_sec, max_sec)
     idx = enforce_segment_lengths(candidates, score, min_steps, max_steps)
     return boundaries_to_segments(idx, timestamps, min_segment_len_steps=1)
 
@@ -67,8 +67,10 @@ def _norm(x):
 
 
 class Segmenters:
-    def __init__(self, stage1_checkpoint: Optional[str], device: str = "cpu"):
+    def __init__(self, stage1_checkpoint: Optional[str], device: str = "cpu",
+                 min_segment_sec: float = STAGE1.min_segment_sec, max_segment_sec: float = STAGE1.max_segment_sec):
         self.device = device
+        self.min_sec, self.max_sec = min_segment_sec, max_segment_sec
         self.stage1 = None
         if stage1_checkpoint and os.path.exists(stage1_checkpoint):
             from src.stage1_boundary.inference import load_stage1_model
@@ -95,7 +97,7 @@ class Segmenters:
             with torch.no_grad():
                 scores = self.stage1.boundary_scores(self.stage1(x))[0].cpu().numpy()
             from src.stage1_boundary.segment import segments_from_scores
-            return segments_from_scores(scores, ts)
+            return segments_from_scores(scores, ts, min_segment_sec=self.min_sec, max_segment_sec=self.max_sec)
 
         ocr = feats["ocr_signal"][keep]
         drift = feats["topic_drift_signal"][keep]
@@ -103,15 +105,15 @@ class Segmenters:
         if name == "pseudo":
             cand = np.where(pseudo_boundaries_from_signals(ocr, drift, vis) == 1)[0]
             score = (0.7 * (0.5 * _norm(ocr) + 0.5 * _norm(drift)) + 0.3 * _norm(vis))[1:]
-            return _segments_from_signal(score, cand, ts)
+            return _segments_from_signal(score, cand, ts, self.min_sec, self.max_sec)
         if name == "topic_drift":
             score = _norm(drift)[1:]
             cand = np.where(score > score.mean() + score.std())[0]
-            return _segments_from_signal(score, cand, ts)
+            return _segments_from_signal(score, cand, ts, self.min_sec, self.max_sec)
         if name == "shot":
             score = _norm(vis)[1:]
             cand = np.where(score > score.mean() + 1.5 * score.std())[0]
-            return _segments_from_signal(score, cand, ts)
+            return _segments_from_signal(score, cand, ts, self.min_sec, self.max_sec)
         raise ValueError(f"unknown segmenter {name}")
 
 

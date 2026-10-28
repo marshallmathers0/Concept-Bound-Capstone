@@ -21,3 +21,4 @@ checkpoints/*
 !data/annotations/gold/
 data/annotations/sheets/
 logs/
+paper/node_modules/

@@ -1,0 +1,61 @@
+{
+  "video_id": "college_lec01",
+  "annotator": "A1",
+  "lecture_span": [
+    0.0,
+    3840.0
+  ],
+  "boundaries_sec": [],
+  "queries": [
+    {
+      "query": "list out some DL architectures",
+      "start_time": 1749.0,
+      "end_time": 1851.0,
+      "concept": "list_out_some_dl_architectures",
+      "type": "example"
+    },
+    {
+      "query": "vanishing gradient problem",
+      "start_time": 3295.0,
+      "end_time": 3398.0,
+      "concept": "vanishing_gradient_problem",
+      "type": "explanation"
+    },
+    {
+      "query": "james h martin",
+      "start_time": 1152.0,
+      "end_time": 1181.0,
+      "concept": "james_h_martin",
+      "type": "other"
+    },
+    {
+      "query": "machine learning types",
+      "start_time": 1412.0,
+      "end_time": 1592.0,
+      "concept": "machine_learning_types",
+      "type": "definition"
+    },
+    {
+      "query": "why deep learning",
+      "start_time": 1854.0,
+      "end_time": 1977.0,
+      "concept": "why_deep_learning",
+      "type": "explanation"
+    },
+    {
+      "query": "propogation",
+      "start_time": 1999.0,
+      "end_time": 2028.0,
+      "concept": "propogation",
+      "type": "explanation"
+    },
+    {
+      "query": "activation functions",
+      "start_time": 2035.0,
+      "end_time": 2420.0,
+      "concept": "activation_functions",
+      "type": "definition"
+    }
+  ],
+  "notes": "Pilot: queries only, no boundaries yet."
+}

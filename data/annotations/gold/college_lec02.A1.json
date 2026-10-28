@@ -1,0 +1,26 @@
+{
+  "video_id": "college_lec02",
+  "annotator": "A1",
+  "lecture_span": [
+    0.0,
+    3840.0
+  ],
+  "boundaries_sec": [],
+  "queries": [
+    {
+      "query": "RNN",
+      "start_time": 133.0,
+      "end_time": 545.0,
+      "concept": "rnn",
+      "type": "definition"
+    },
+    {
+      "query": "long term dependecies",
+      "start_time": 581.0,
+      "end_time": 661.0,
+      "concept": "long_term_dependecies",
+      "type": "explanation"
+    }
+  ],
+  "notes": "Annotator note: 'everything unwanted' after the second query (rest of recording not usable)."
+}

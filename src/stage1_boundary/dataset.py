@@ -54,6 +54,10 @@ def span_mask(timestamps: np.ndarray, gold: Optional[dict]) -> np.ndarray:
 def labels_for_video(feats: dict, gold: Optional[dict], label_source: str):
     """Return (keep_mask, is_boundary over kept steps, source_used)."""
     timestamps = feats["timestamps"].astype(np.float32)
+    # A gold file may hold only queries (e.g. a pilot without boundary
+    # annotation); that is not a claim that the lecture has no boundaries.
+    if gold is not None and not gold.get("boundaries_sec"):
+        gold = None
     if label_source in ("auto", "gold") and gold is not None:
         keep = span_mask(timestamps, gold)
         is_boundary = boundaries_from_annotations(timestamps[keep], gold["boundaries_sec"])

@@ -130,6 +130,8 @@ def main():
                 report += [f"- ERROR: {e}" for e in errors] + [f"- warning: {w}" for w in warnings] + [""]
 
         for a, b in itertools.combinations(sorted(anns), 2):
+            if not (anns[a].get("boundaries_sec") and anns[b].get("boundaries_sec")):
+                continue  # agreement needs boundaries from both annotators
             ts = feats["timestamps"]
             lo = max(anns[a]["lecture_span"][0], anns[b]["lecture_span"][0])
             hi = min(anns[a]["lecture_span"][1], anns[b]["lecture_span"][1])

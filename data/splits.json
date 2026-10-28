@@ -1,0 +1,22 @@
+{
+  "train": [
+    "college_lec05",
+    "college_lec06",
+    "college_lec07",
+    "college_lec08",
+    "college_lec09",
+    "college_lec12"
+  ],
+  "val": [
+    "college_lec04",
+    "college_lec11"
+  ],
+  "test": [
+    "college_lec01",
+    "college_lec02",
+    "college_lec03"
+  ],
+  "seed": null,
+  "grouped_by": "video",
+  "note": "Pilot split (2026-10-28): test = the 3 lectures with pilot gold queries, fixed before any evaluation. Re-split with scripts/make_splits.py --force once all ~30 lectures exist, before annotating more."
+}

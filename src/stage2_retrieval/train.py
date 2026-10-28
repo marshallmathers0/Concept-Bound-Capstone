@@ -53,7 +53,7 @@ def info_nce_loss(query_z: torch.Tensor, seg_z: torch.Tensor, temperature: float
     return 0.5 * (loss_q2s + loss_s2q)
 
 
-def run_epoch(model, loader, optimizer, device, temperature, train=True):
+def run_epoch(model, loader, optimizer, device, temperature, train=True, pair_loss_weight=0.0):
     model.train(train)
     total_loss, n_batches = 0.0, 0
 
@@ -65,9 +65,13 @@ def run_epoch(model, loader, optimizer, device, temperature, train=True):
         seg_key = batch["seg_key"].to(device) if "seg_key" in batch else None
 
         with torch.set_grad_enabled(train):
-            seg_z = model.encode_segments(ocr_emb, transcript_emb, visual_emb)
+            seg_z, parts = model.segment_encoder.forward_with_parts(ocr_emb, transcript_emb, visual_emb)
             query_z = model.encode_queries(query_emb)
             loss = info_nce_loss(query_z, seg_z, temperature, seg_key)
+            if parts and pair_loss_weight > 0:
+                # Pairwise mode: one contrastive term per modality pair.
+                loss = loss + pair_loss_weight * sum(
+                    info_nce_loss(query_z, z, temperature, seg_key) for z in parts.values()) / len(parts)
 
             if train:
                 optimizer.zero_grad()
@@ -89,7 +93,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=STAGE2.batch_size)
     parser.add_argument("--lr", type=float, default=STAGE2.lr)
     parser.add_argument("--temperature", type=float, default=STAGE2.temperature)
-    parser.add_argument("--fusion-mode", default="cross_attention", choices=["cross_attention", "concat"])
+    parser.add_argument("--fusion-mode", default="cross_attention", choices=["cross_attention", "concat", "pairwise"])
+    parser.add_argument("--pair-loss-weight", type=float, default=0.5,
+                        help="Weight of the per-pair InfoNCE terms (pairwise mode only).")
     parser.add_argument("--use-gold", action="store_true",
                         help="Also train on human gold queries of TRAIN-split videos.")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -152,7 +158,8 @@ def main():
     best_val = float("inf")
     history = []
     for epoch in range(1, args.epochs + 1):
-        train_loss = run_epoch(model, train_loader, optimizer, args.device, args.temperature, train=True)
+        train_loss = run_epoch(model, train_loader, optimizer, args.device, args.temperature, train=True,
+                               pair_loss_weight=args.pair_loss_weight)
         if val_loader is not None:
             val_loss = run_epoch(model, val_loader, optimizer, args.device, args.temperature, train=False)
         else:
