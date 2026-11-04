@@ -40,7 +40,7 @@ from src.evaluation.bench import (
     Segmenters, build_corpus, build_retrievers, evaluate_stage1, gold_queries,
 )
 from src.evaluation.retrieval_metrics import bootstrap_ci, paired_bootstrap_pvalue, per_query_metrics
-from src.utils.gold import list_gold_videos, load_splits
+from src.utils.gold import list_gold_videos, load_gold, load_splits
 
 DEFAULT_SEGMENTERS = ["stage1", "pseudo", "topic_drift", "shot", "fixed_30", "fixed_60", "fixed_120", "gold"]
 
@@ -91,6 +91,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     segs = Segmenters(args.stage1_checkpoint, args.device)
     seg_names = segs.names(args.segmenters)
+    if "gold" in seg_names and not any((load_gold(v) or {}).get("boundaries_sec") for v in gold_ids):
+        print("No gold boundaries yet: skipping the 'gold' (oracle) segmenter.")
+        seg_names.remove("gold")
 
     # ---------------- Stage 1 ----------------
     stage1 = evaluate_stage1(gold_ids, seg_names, segs)
