@@ -22,3 +22,9 @@ checkpoints/*
 data/annotations/sheets/
 logs/
 paper/node_modules/
+
+# RAG index contains classroom transcripts: keep out of the public repo
+data/rag_index/
+.env
+build/
+.pytest_cache/

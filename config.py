@@ -118,6 +118,10 @@ class ModelNames:
     sentence_bert: str = "sentence-transformers/all-MiniLM-L6-v2"
     clip_model: str = "openai/clip-vit-base-patch32"
     whisper_model: str = "base"
+    # Force the decoding language. Auto-detection looks only at the first 30 s,
+    # which in classroom recordings is often room noise: lec03/04/06 were
+    # decoded as Welsh, turning the whole hour into gibberish.
+    whisper_language: str = "en"
     ocr_engine: str = "easyocr"  # "easyocr" or "tesseract"
     # Off-the-shelf dense retriever used as a strong text baseline.
     dense_baseline: str = "BAAI/bge-small-en-v1.5"

@@ -42,3 +42,10 @@ These unlock Table II (segmentation) and the oracle row in Table III.
 - Repository URL for code release.
 - Before submitting, paste the text into IEEE's official `conference-template-letter.docx` (ieee.org → Conferences → Publishing → Templates). ieee.org blocks automated downloads.
 - Submit `ICALT2027_draft_blind` as a PDF by **15 Jan 2027** (ICALT, track AISLE).
+
+## 8. RAG layer (ask-your-lectures demo)
+- [ ] **Verify the 49 drafted eval questions** (`d..` in `eval/make_questions.py`): check each answer span in the video, fix times or delete. Steps: `eval/README.md`.
+- [ ] **Add an LLM key** (free Groq or Gemini) to `.env` (copy `.env.example`), then run `python -m eval.run` to get faithfulness, citation accuracy and LLM latency. Until then those metrics are reported as "not run".
+- [ ] **Public demo:** pick 3–5 openly licensed lectures (e.g. MIT OCW, CC BY-NC-SA), fill `data/video_meta.json` (title, YouTube URL, licence, attribution), build the index, then follow README → "Deploy to Hugging Face Spaces". The college recordings must not go public.
+- [ ] Mark `lecture_span` for lecture 5 so the roll call (student names, ~40:30–1:02:00) is excluded from the index.
+- [ ] Record the demo GIF (`docs/demo.gif`) and add the Space and video links to README.

@@ -63,7 +63,14 @@ class LectureRetriever:
             text = (meta.get("transcript_text", "") + " " + meta.get("ocr_text", "")).strip()
             texts_to_encode.append(text if text else " ")
             
-        if texts_to_encode:
+        # Cached at build time by src/rag/build_index.py (avoids ~30 s of
+        # encoding on CPU at every app start).
+        cache = os.path.join(index_dir, "text_embeddings.npy")
+        cached = np.load(cache) if os.path.exists(cache) else None
+        if cached is not None and len(cached) == len(self.metadata):
+            self.segment_text_embeddings = cached.astype(np.float32)
+            print("[LectureRetriever] Loaded cached text embeddings.")
+        elif texts_to_encode:
             embeds = self.text_encoder.encode_long(texts_to_encode)
             self.segment_text_embeddings = embeds / (np.linalg.norm(embeds, axis=1, keepdims=True) + 1e-8)
         else:
@@ -120,6 +127,9 @@ class LectureRetriever:
             meta = self.metadata[idx]
             results.append({
                 "video_id": meta["video_id"],
+                "segment_id": meta.get("segment_id", f"{meta['video_id']}@{int(meta['start_time'])}"),
+                "title": meta.get("title", meta["video_id"]),
+                "url": meta.get("url", ""),
                 "start_time": meta["start_time"],
                 "end_time": meta["end_time"],
                 "start_time_str": format_timestamp(meta["start_time"]),
@@ -149,6 +159,9 @@ class LectureRetriever:
             meta = self.metadata[idx]
             results.append({
                 "video_id": meta["video_id"],
+                "segment_id": meta.get("segment_id", f"{meta['video_id']}@{int(meta['start_time'])}"),
+                "title": meta.get("title", meta["video_id"]),
+                "url": meta.get("url", ""),
                 "start_time": meta["start_time"],
                 "end_time": meta["end_time"],
                 "start_time_str": format_timestamp(meta["start_time"]),
@@ -228,6 +241,9 @@ class LectureRetriever:
                 meta = self.metadata[idx]
                 faiss_results.append({
                     "video_id": meta["video_id"],
+                "segment_id": meta.get("segment_id", f"{meta['video_id']}@{int(meta['start_time'])}"),
+                "title": meta.get("title", meta["video_id"]),
+                "url": meta.get("url", ""),
                     "start_time": meta["start_time"],
                     "end_time": meta["end_time"],
                     "start_time_str": format_timestamp(meta["start_time"]),

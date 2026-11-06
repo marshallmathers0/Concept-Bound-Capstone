@@ -55,7 +55,8 @@ class WhisperASR:
         model = self._load()
         # condition_on_previous_text=False stops one hallucination from
         # seeding the next window (the main source of repeated phrases).
-        result = model.transcribe(audio_path, verbose=False,
+        from config import MODELS
+        result = model.transcribe(audio_path, verbose=False, language=MODELS.whisper_language or None,
                                   condition_on_previous_text=False)
         kept, dropped = [], 0
         for seg in result["segments"]:
@@ -65,6 +66,10 @@ class WhisperASR:
             kept.append(TranscriptSegment(start=seg["start"], end=seg["end"],
                                           text=seg["text"].strip()))
         kept = drop_repeated_segments(kept)
+        share = english_share([s.text for s in kept])
+        if share < 0.5:
+            print(f"    WARNING: only {100 * share:.0f}% of transcript segments look like English. "
+                  f"Check the language setting (config.MODELS.whisper_language).")
         print(f"    Whisper: kept {len(kept)} segments, dropped {dropped} "
               f"low-confidence + {len(result['segments']) - dropped - len(kept)} repeated")
         return kept
@@ -105,6 +110,20 @@ def drop_repeated_segments(segments: List[TranscriptSegment], window_sec: float 
         if len(same) >= min_count:
             drop.update(same)
     return [s for i, s in enumerate(segments) if i not in drop]
+
+
+def english_share(texts) -> float:
+    """Fraction of segments whose words are at least 15% common English
+    function words: a cheap sanity check for wrong-language decoding."""
+    import re
+    common = set("the a is and to of in that this we you it so what are for be on with have can do not if one will".split())
+    n = hits = 0
+    for t in texts:
+        w = re.findall(r"[a-z]+", t.lower())
+        if w:
+            n += 1
+            hits += sum(x in common for x in w) / len(w) > 0.15
+    return hits / n if n else 0.0
 
 
 def asr_segments_to_array(transcript: List[TranscriptSegment]) -> np.ndarray:

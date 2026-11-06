@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-video display metadata for the RAG index. 'url' may be a YouTube link (then citations embed the player at the timestamp); if empty, the local file under data/raw_videos is used. These college recordings are for internal use only: replace them with openly licensed lectures before any public deployment.",
+  "college_lec01": {"title": "Lecture 1", "course": "Large Language Models (undergraduate)", "url": "", "license": "internal - not for public release", "attribution": "College lecture recording"},
+  "college_lec02": {"title": "Lecture 2", "course": "Large Language Models (undergraduate)", "url": "", "license": "internal - not for public release", "attribution": "College lecture recording"},
+  "college_lec03": {"title": "Lecture 3", "course": "Large Language Models (undergraduate)", "url": "", "license": "internal - not for public release", "attribution": "College lecture recording"},
+  "college_lec04": {"title": "Lecture 4", "course": "Large Language Models (undergraduate)", "url": "", "license": "internal - not for public release", "attribution": "College lecture recording"},
+  "college_lec05": {"title": "Lecture 5", "course": "Large Language Models (undergraduate)", "url": "", "license": "internal - not for public release", "attribution": "College lecture recording"}
+}
