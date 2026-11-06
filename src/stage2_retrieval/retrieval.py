@@ -9,6 +9,18 @@ is used: direct Sentence-BERT cosine similarity between the query and each
 segment's stored transcript/OCR text.  The two scores are combined for the
 final ranking, ensuring search works reasonably even before the model is
 properly trained.
+
+That automatic switching is convenient for the demo app (mode="auto") but
+must never be used to report results: it hides which system produced a
+ranking. Evaluation calls `search(..., mode=...)` with an explicit mode, and
+every result carries `search_mode` saying what actually produced it.
+
+Modes:
+  model   - trained fusion model + FAISS only
+  bm25    - BM25 over segment transcript + slide text
+  dense   - Sentence-BERT cosine over segment text
+  hybrid  - 50/50 BM25 + dense
+  auto    - demo behaviour (model, falling back to hybrid when its scores look degenerate)
 """
 
 import os
@@ -21,6 +33,9 @@ from config import PATHS
 from src.stage2_retrieval.encoders import TextEncoder
 from src.stage2_retrieval.index_builder import load_stage2_model
 from src.utils.io_utils import load_json, format_timestamp
+from src.utils.text_search import bm25_tokenize
+
+SEARCH_MODES = ("auto", "model", "bm25", "dense", "hybrid")
 
 
 class LectureRetriever:
@@ -48,8 +63,15 @@ class LectureRetriever:
             text = (meta.get("transcript_text", "") + " " + meta.get("ocr_text", "")).strip()
             texts_to_encode.append(text if text else " ")
             
-        if texts_to_encode:
-            embeds = self.text_encoder.encode(texts_to_encode)
+        # Cached at build time by src/rag/build_index.py (avoids ~30 s of
+        # encoding on CPU at every app start).
+        cache = os.path.join(index_dir, "text_embeddings.npy")
+        cached = np.load(cache) if os.path.exists(cache) else None
+        if cached is not None and len(cached) == len(self.metadata):
+            self.segment_text_embeddings = cached.astype(np.float32)
+            print("[LectureRetriever] Loaded cached text embeddings.")
+        elif texts_to_encode:
+            embeds = self.text_encoder.encode_long(texts_to_encode)
             self.segment_text_embeddings = embeds / (np.linalg.norm(embeds, axis=1, keepdims=True) + 1e-8)
         else:
             self.segment_text_embeddings = np.zeros((0, self.text_encoder.dim), dtype=np.float32)
@@ -81,9 +103,8 @@ class LectureRetriever:
 
             corpus = []
             for meta in self.metadata:
-                text = (meta.get("transcript_text", "") + " " +
-                        meta.get("ocr_text", "")).strip().lower()
-                corpus.append(text.split() if text else ["."])
+                text = meta.get("transcript_text", "") + " " + meta.get("ocr_text", "")
+                corpus.append(bm25_tokenize(text) or ["."])
             self.bm25 = BM25Okapi(corpus)
             print(f"[LectureRetriever] BM25 index built over {len(corpus)} segments.")
         except ImportError:
@@ -95,7 +116,7 @@ class LectureRetriever:
         if self.bm25 is None:
             return []
 
-        query_tokens = query.lower().split()
+        query_tokens = bm25_tokenize(query)
         scores = self.bm25.get_scores(query_tokens)
         top_idx = np.argsort(-scores)[:top_k]
 
@@ -106,6 +127,9 @@ class LectureRetriever:
             meta = self.metadata[idx]
             results.append({
                 "video_id": meta["video_id"],
+                "segment_id": meta.get("segment_id", f"{meta['video_id']}@{int(meta['start_time'])}"),
+                "title": meta.get("title", meta["video_id"]),
+                "url": meta.get("url", ""),
                 "start_time": meta["start_time"],
                 "end_time": meta["end_time"],
                 "start_time_str": format_timestamp(meta["start_time"]),
@@ -135,6 +159,9 @@ class LectureRetriever:
             meta = self.metadata[idx]
             results.append({
                 "video_id": meta["video_id"],
+                "segment_id": meta.get("segment_id", f"{meta['video_id']}@{int(meta['start_time'])}"),
+                "title": meta.get("title", meta["video_id"]),
+                "url": meta.get("url", ""),
                 "start_time": meta["start_time"],
                 "end_time": meta["end_time"],
                 "start_time_str": format_timestamp(meta["start_time"]),
@@ -182,8 +209,19 @@ class LectureRetriever:
         return merged[:top_k]
 
     def search(self, query: str, top_k: int = 5,
-               video_url_template: str = "{video_id}#t={start}") -> List[Dict]:
+               video_url_template: str = "{video_id}#t={start}",
+               mode: str = "auto") -> List[Dict]:
+        if mode not in SEARCH_MODES:
+            raise ValueError(f"mode must be one of {SEARCH_MODES}")
         top_k = min(top_k, max(1, self.index.ntotal))
+        if mode == "bm25":
+            return self._finalize_results(self._bm25_search(query, top_k), video_url_template)
+        if mode == "dense":
+            return self._finalize_results(self._text_similarity_search(query, top_k), video_url_template)
+        if mode == "hybrid":
+            return self._finalize_results(self._combined_fallback_search(query, top_k), video_url_template)
+        if mode == "model" and self._model is None:
+            raise RuntimeError("mode='model' requested but no Stage 2 checkpoint is loaded.")
 
         # --- FAISS model-based search ---
         faiss_results = []
@@ -203,6 +241,9 @@ class LectureRetriever:
                 meta = self.metadata[idx]
                 faiss_results.append({
                     "video_id": meta["video_id"],
+                "segment_id": meta.get("segment_id", f"{meta['video_id']}@{int(meta['start_time'])}"),
+                "title": meta.get("title", meta["video_id"]),
+                "url": meta.get("url", ""),
                     "start_time": meta["start_time"],
                     "end_time": meta["end_time"],
                     "start_time_str": format_timestamp(meta["start_time"]),
@@ -212,6 +253,9 @@ class LectureRetriever:
                     "score": float(score),
                     "search_mode": "model",
                 })
+
+        if mode == "model":
+            return self._finalize_results(faiss_results, video_url_template)
 
         # --- Fallback search (BM25 + semantic hybrid) ---
         if not faiss_results:

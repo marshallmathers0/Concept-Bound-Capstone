@@ -18,6 +18,7 @@ a clear error is raised explaining what to install. Real lecture videos are
 processed from `data/raw_videos/` and written to `data/features/`.
 """
 
+import json
 import os
 import subprocess
 import tempfile
@@ -26,9 +27,10 @@ from typing import List, Tuple
 import numpy as np
 
 from config import FEATURES, MODELS, PATHS
-from src.feature_extraction.ocr_extractor import extract_ocr_signal, get_ocr_backend
+from src.feature_extraction.ocr_extractor import get_ocr_backend, resolve_ocr_bboxes
 from src.feature_extraction.asr_extractor import (
     SentenceEncoder,
+    asr_segments_to_array,
     extract_topic_drift_signal,
     get_asr_backend,
 )
@@ -119,41 +121,43 @@ def extract_audio(video_path: str) -> str:
     return out_path
 
 
-def _ocr_with_ssim_gate(frames, backend, ssim_threshold: float = 0.95, bbox=None):
+def _ocr_with_ssim_gate(frames, backend, bboxes=None, ssim_threshold: float = 0.95):
     """Run OCR only when the board/slide has visually changed (SSIM < threshold).
 
     This is content-aware: instead of blindly skipping every N-th frame, it
     uses SSIM frame comparison to detect actual visual changes. For typical
     lecture videos where the board/slide is static most of the time, this
     cuts OCR processing by ~80%+ while never missing a real change.
+
+    `bboxes` gives one crop box per frame (see `resolve_ocr_bboxes`).
     """
     from src.feature_extraction.ocr_extractor import board_region, text_change_rate, ssim_gate
 
     T = len(frames)
     if T == 0:
         return np.zeros(0, dtype=np.float32), []
+    bboxes = bboxes if bboxes is not None else [None] * T
 
     # Always OCR the first frame
     all_texts = [""] * T
-    all_texts[0] = backend.read_text(board_region(frames[0], bbox))
-    last_ocr_frame = frames[0]
+    last_crop = board_region(frames[0], bboxes[0])
+    all_texts[0] = backend.read_text(last_crop)
     last_ocr_idx = 0
     ocr_count = 1
     skipped_count = 0
 
     for t in range(1, T):
-        cropped = board_region(frames[t], bbox)
-        cropped_prev = board_region(last_ocr_frame, bbox)
+        cropped = board_region(frames[t], bboxes[t])
 
         # Check if frame has changed enough to warrant OCR
-        if ssim_gate(cropped_prev, cropped, threshold=ssim_threshold):
+        if ssim_gate(last_crop, cropped, threshold=ssim_threshold):
             # Frame is similar — skip OCR, carry forward previous text
             all_texts[t] = all_texts[last_ocr_idx]
             skipped_count += 1
         else:
             # Frame has changed — run OCR
             all_texts[t] = backend.read_text(cropped)
-            last_ocr_frame = frames[t]
+            last_crop = cropped
             last_ocr_idx = t
             ocr_count += 1
 
@@ -172,6 +176,37 @@ def _ocr_with_ssim_gate(frames, backend, ssim_threshold: float = 0.95, bbox=None
         signal[t] = text_change_rate(all_texts[t - 1], all_texts[t])
 
     return signal, all_texts
+
+
+def run_ocr(video_id: str, frames, device: str = None):
+    """OCR every sampled frame of one video.
+
+    Returns (signal, texts, per-frame bbox array, provenance dict).
+    """
+    ocr_gpu = None if device is None else (device == "cuda")
+    backend = get_ocr_backend(MODELS.ocr_engine, gpu=ocr_gpu)
+    bboxes, bbox_summary = resolve_ocr_bboxes(video_id, frames, PATHS.ocr_regions_path)
+    print(f"  [{video_id}] OCR crop source (frames): {bbox_summary}")
+    signal, texts = _ocr_with_ssim_gate(frames, backend, bboxes)
+
+    coverage = float(np.mean([bool(t.strip()) for t in texts])) if texts else 0.0
+    print(f"  [{video_id}] OCR text found on {100 * coverage:.0f}% of frames")
+    if coverage < 0.05:
+        print(f"  [{video_id}] WARNING: almost no OCR text. Check the crop "
+              f"(data/ocr_regions.json) and whether slides are visible.")
+    provenance = {"ocr_engine": MODELS.ocr_engine, "ocr_bbox_source": bbox_summary,
+                  "ocr_coverage": coverage}
+    bbox_arr = np.array([b if b is not None else (np.nan,) * 4 for b in bboxes], dtype=np.float32)
+    return signal, texts, bbox_arr, provenance
+
+
+def run_asr(video_id: str, video_path: str, device: str = None):
+    """Transcribe one video with Whisper. Returns the list of raw ASR segments."""
+    audio_path = extract_audio(video_path)
+    asr = get_asr_backend(MODELS.whisper_model, device=device)
+    transcript = asr.transcribe(audio_path)
+    print(f"  [{video_id}] ASR done — {len(transcript)} segments kept.")
+    return transcript
 
 
 def build_feature_stream(video_path: str, save: bool = True, device: str = None,
@@ -210,29 +245,19 @@ def build_feature_stream(video_path: str, save: bool = True, device: str = None,
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    # --- OCR text-change (SSIM-gated for speed) ---
+    # --- OCR text-change (SSIM-gated, cropped to the projected screen) ---
     print(f"  [{video_id}] Running SSIM-gated OCR...")
-    ocr_gpu = None if device is None else (device == "cuda")
-    ocr_backend = get_ocr_backend(MODELS.ocr_engine, gpu=ocr_gpu)
-    ocr_signal, ocr_texts = _ocr_with_ssim_gate(frames, ocr_backend)
+    ocr_signal, ocr_texts, ocr_bboxes, provenance = run_ocr(video_id, frames, device)
     print(f"  [{video_id}] OCR done.")
-    if sequential_gpu:
-        del ocr_backend
-        _free_gpu()
+    _free_gpu()
 
     # --- ASR + topic drift ---
+    # No silent fallback: an empty transcript would quietly poison Stage 1
+    # (topic drift) and Stage 2 (all text). Fix ffmpeg/Whisper instead.
     print(f"  [{video_id}] Running ASR (Whisper)...")
-    try:
-        audio_path = extract_audio(video_path)
-        asr = get_asr_backend(MODELS.whisper_model, device=device)
-        transcript = asr.transcribe(audio_path)
-        print(f"  [{video_id}] ASR done — {len(transcript)} segments.")
-        if sequential_gpu:
-            del asr
-            _free_gpu()
-    except Exception as e:
-        print(f"  [{video_id}] ASR failed ({e}), using empty transcript.")
-        transcript = []
+    transcript = run_asr(video_id, video_path, device)
+    provenance["whisper_model"] = MODELS.whisper_model
+    _free_gpu()
     sbert = SentenceEncoder(MODELS.sentence_bert, device=device)
     topic_drift_signal, transcript_texts = extract_topic_drift_signal(
         transcript, timestamps, sbert, use_hybrid=True)
@@ -269,6 +294,11 @@ def build_feature_stream(video_path: str, save: bool = True, device: str = None,
         features=features,
         ocr_texts=np.array(ocr_texts, dtype=object),
         transcript_texts=np.array(transcript_texts, dtype=object),
+        # Raw (start, end, text) ASR segments - use these, not the overlapping
+        # per-step rolling windows, whenever you need a segment's transcript.
+        asr_segments=asr_segments_to_array(transcript),
+        ocr_bboxes=ocr_bboxes,
+        provenance=np.array(json.dumps(provenance)),
     )
 
     if save:

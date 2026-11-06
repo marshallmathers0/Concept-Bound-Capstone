@@ -1,0 +1,68 @@
+{
+  "video_id": "college_lec03",
+  "annotator": "A1",
+  "lecture_span": [
+    0.0,
+    3840.0
+  ],
+  "boundaries_sec": [],
+  "queries": [
+    {
+      "query": "what is LLM",
+      "start_time": 1011.0,
+      "end_time": 1364.0,
+      "concept": "what_is_llm",
+      "type": "definition"
+    },
+    {
+      "query": "architecture of LLM",
+      "start_time": 1365.0,
+      "end_time": 1487.0,
+      "concept": "architecture_of_llm",
+      "type": "explanation"
+    },
+    {
+      "query": "decoders and encoders",
+      "start_time": 1490.0,
+      "end_time": 1741.0,
+      "concept": "decoders_and_encoders",
+      "type": "comparison"
+    },
+    {
+      "query": "encoder-decoder",
+      "start_time": 1742.0,
+      "end_time": 1845.0,
+      "concept": "encoder-decoder",
+      "type": "explanation"
+    },
+    {
+      "query": "conditional generation",
+      "start_time": 1869.0,
+      "end_time": 2202.0,
+      "concept": "conditional_generation",
+      "type": "definition"
+    },
+    {
+      "query": "prompt",
+      "start_time": 2204.0,
+      "end_time": 2534.0,
+      "concept": "prompt",
+      "type": "definition"
+    },
+    {
+      "query": "LLM usually has a system prompt",
+      "start_time": 2536.0,
+      "end_time": 2610.0,
+      "concept": "llm_usually_has_a_system_prompt",
+      "type": "explanation"
+    },
+    {
+      "query": "where does total probability come from",
+      "start_time": 2614.0,
+      "end_time": 3014.0,
+      "concept": "where_does_total_probability_come_from",
+      "type": "derivation"
+    }
+  ],
+  "notes": "Pilot: queries only, no boundaries yet."
+}

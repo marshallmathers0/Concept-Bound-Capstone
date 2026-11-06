@@ -18,9 +18,18 @@ These are the two trainable modules of Stage 2:
     Both modules are trained jointly with an InfoNCE contrastive loss
     (see `train.py`).
 
-An ablation switch (`fusion_mode="concat"`) is provided to reproduce the
-"concatenation vs. cross-attention" ablation study described in the
-proposal.
+Fusion modes (the fusion ablation):
+  - "cross_attention": the three modality tokens attend to each other in one
+    transformer block, mean-pooled (default).
+  - "concat": projections are concatenated, no attention.
+  - "pairwise": adapted from Arora et al. (LREC-COLING 2024), text-to-
+    multimodal retrieval with bimodal fusion in a shared cross-modal
+    transformer. Each modality first passes through its own unimodal expert;
+    ONE shared transformer block then fuses every modality pair
+    (OCR+transcript, transcript+visual, OCR+visual), and the segment embedding
+    is pooled from the three pair representations. `forward_with_parts` also
+    returns each pair representation so training can add a contrastive loss
+    per pair, as in their pairwise loss combinations.
 """
 
 import torch
@@ -66,7 +75,9 @@ class SegmentFusionEncoder(nn.Module):
         # distinguish the OCR/transcript/visual tokens).
         self.modality_embed = nn.Parameter(torch.randn(3, hidden_dim) * 0.02)
 
-        if fusion_mode == "cross_attention":
+        if fusion_mode in ("cross_attention", "pairwise"):
+            # In "pairwise" mode this block is the shared cross-modal fusion
+            # transformer, applied to each modality pair with the same weights.
             self.attn = nn.MultiheadAttention(hidden_dim, num_heads, dropout=dropout, batch_first=True)
             self.norm1 = nn.LayerNorm(hidden_dim)
             self.ffn = nn.Sequential(
@@ -77,6 +88,12 @@ class SegmentFusionEncoder(nn.Module):
             )
             self.norm2 = nn.LayerNorm(hidden_dim)
             fused_dim = hidden_dim
+            if fusion_mode == "pairwise":
+                self.experts = nn.ModuleList([
+                    nn.Sequential(nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+                                  nn.Dropout(dropout), nn.Linear(hidden_dim, hidden_dim))
+                    for _ in range(3)
+                ])
         elif fusion_mode == "concat":
             fused_dim = hidden_dim * 3
         else:
@@ -88,9 +105,33 @@ class SegmentFusionEncoder(nn.Module):
             nn.Linear(out_dim, out_dim),
         )
 
+    PAIRS = {"ocr_transcript": (0, 1), "transcript_visual": (1, 2), "ocr_visual": (0, 2)}
+
+    def _fuse_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
+        attn_out, _ = self.attn(tokens, tokens, tokens)
+        tokens = self.norm1(tokens + attn_out)
+        tokens = self.norm2(tokens + self.ffn(tokens))
+        return tokens.mean(dim=1)
+
+    def forward_with_parts(self, ocr_emb, transcript_emb, visual_emb):
+        """Pairwise mode: (z_seg, {pair_name: z_pair}), all L2-normalized."""
+        if self.fusion_mode != "pairwise":
+            return self.forward(ocr_emb, transcript_emb, visual_emb), {}
+        h = [self.zscore_norm(self.ocr_proj(ocr_emb)) + self.modality_embed[0],
+             self.zscore_norm(self.transcript_proj(transcript_emb)) + self.modality_embed[1],
+             self.zscore_norm(self.visual_proj(visual_emb)) + self.modality_embed[2]]
+        h = [x + expert(x) for x, expert in zip(h, self.experts)]  # unimodal experts (residual)
+        pair_h = {name: self._fuse_tokens(torch.stack([h[a], h[b]], dim=1))
+                  for name, (a, b) in self.PAIRS.items()}
+        z = nn.functional.normalize(self.out_proj(torch.stack(list(pair_h.values())).mean(0)), dim=-1)
+        parts = {k: nn.functional.normalize(self.out_proj(v), dim=-1) for k, v in pair_h.items()}
+        return z, parts
+
     def forward(self, ocr_emb: torch.Tensor, transcript_emb: torch.Tensor,
                 visual_emb: torch.Tensor) -> torch.Tensor:
         """All inputs: (B, modality_dim) -> output: (B, out_dim), L2-normalized."""
+        if self.fusion_mode == "pairwise":
+            return self.forward_with_parts(ocr_emb, transcript_emb, visual_emb)[0]
         # Project each modality to shared hidden dimension
         ocr_h = self.ocr_proj(ocr_emb)
         trans_h = self.transcript_proj(transcript_emb)
@@ -102,11 +143,7 @@ class SegmentFusionEncoder(nn.Module):
         vis_h = self.zscore_norm(vis_h) + self.modality_embed[2]
 
         if self.fusion_mode == "cross_attention":
-            tokens = torch.stack([ocr_h, trans_h, vis_h], dim=1)  # (B, 3, H)
-            attn_out, _ = self.attn(tokens, tokens, tokens)
-            tokens = self.norm1(tokens + attn_out)
-            tokens = self.norm2(tokens + self.ffn(tokens))
-            fused = tokens.mean(dim=1)  # (B, H)
+            fused = self._fuse_tokens(torch.stack([ocr_h, trans_h, vis_h], dim=1))  # (B, H)
         else:  # concat
             fused = torch.cat([ocr_h, trans_h, vis_h], dim=-1)
 

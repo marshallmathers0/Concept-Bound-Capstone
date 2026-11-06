@@ -82,8 +82,11 @@ def build_index(segments_dir: str, checkpoint_path: str, index_dir: str, device:
                 "video_id": video_id,
                 "start_time": float(feats["start_times"][i]),
                 "end_time": float(feats["end_times"][i]),
-                "ocr_text": str(feats["ocr_text"][i])[:300],
-                "transcript_text": str(feats["transcript_text"][i])[:300],
+                # Full text: BM25 / dense search must see the whole segment.
+                # `snippet` is what the UI shows.
+                "ocr_text": str(feats["ocr_text"][i]),
+                "transcript_text": str(feats["transcript_text"][i]),
+                "snippet": str(feats["transcript_text"][i])[:300],
             })
 
     faiss.write_index(index, os.path.join(index_dir, "segments.index"))

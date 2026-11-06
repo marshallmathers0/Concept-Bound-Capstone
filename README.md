@@ -1,4 +1,142 @@
-# Concept-Aware Retrieval of Lecture Video Moments
+# ConceptBound-Net
+
+**Ask questions about hour-long lecture recordings and get answers grounded in the lectures, with clickable `[Lecture 3, 12:45]` citations that open the video at the right moment.**
+
+> Live demo: _[Hugging Face Space link — add after deployment]_ · Demo video: _[link]_
+>
+> ![demo](docs/demo.gif) _(GIF placeholder: record the Gradio app answering one question with citations)_
+
+ConceptBound is a multimodal lecture search engine (Whisper + EasyOCR + CLIP, a trained concept-boundary detector, a cross-attention segment encoder, FAISS + BM25 hybrid retrieval) with a retrieval-augmented generation layer on top. The LLM may only use retrieved lecture segments: answers are refused when retrieval confidence is low, and every citation is validated against what was actually retrieved.
+
+B.Tech final-year project, Department of CSE (AI & ML). Interview guide: **[LEARNING.md](LEARNING.md)**.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Offline["Offline indexing (python -m src.rag.build_index)"]
+    V[Lecture video] --> W[Whisper ASR<br/>English, hallucination filter]
+    V --> O[EasyOCR on<br/>auto-detected screen]
+    V --> C[CLIP frames]
+    W & O & C --> S1[Stage 1: Pedagogical<br/>Boundary Detector]
+    S1 --> SEG[Concept segments]
+    SEG --> S2[Stage 2: cross-attention<br/>fusion encoder]
+    SEG --> TE[Sentence-BERT<br/>segment embeddings]
+    S2 --> F[(FAISS IndexFlatIP)]
+    TE --> E[(cached embeddings)]
+    SEG --> M[(segment metadata<br/>+ BM25 corpus)]
+  end
+  subgraph Online["Online: POST /ask, Gradio demo"]
+    Q[Question + history] --> RW[Follow-up rewrite]
+    RW --> H[Hybrid retrieval<br/>BM25 + dense]
+    F & E & M --> H
+    H --> RR[Cross-encoder reranker]
+    RR --> G{Confidence<br/>gate}
+    G -- low --> REF[Not covered in<br/>the indexed lectures]
+    G -- ok --> CB[Context builder<br/>S1..S5, token budget]
+    CB --> LLM[LLM: Groq / Gemini / Ollama<br/>JSON output]
+    LLM --> PV[Pydantic parse]
+    PV --> CV[Citation validation]
+    CV --> A[Answer + timestamp links]
+  end
+```
+
+| Folder | What lives there |
+|---|---|
+| `src/feature_extraction/`, `src/stage1_boundary/`, `src/stage2_retrieval/` | Original research pipeline (features, boundary detector, fusion encoder, existing hybrid retriever) |
+| `src/rag/` | Offline index build, context builder, prompts, Pydantic schema, citation validation, follow-up rewrite, pipeline |
+| `src/retrieval/` | Search service over the existing retriever + cross-encoder reranker + confidence |
+| `src/llm/` | `LLMClient` interface; Groq, Gemini, Ollama, mock; retries/backoff |
+| `eval/` | Question set, metrics, LLM-as-judge, `python -m eval.run` |
+| `app/backend/` | FastAPI: `POST /ask`, `GET /health`, existing `/api/search` |
+| `space/` | Gradio demo + Hugging Face Space packaging |
+| `tests/` | pytest suite (LLM mocked, no network) |
+
+## Quickstart (local)
+
+```bash
+python -m venv .venv && .venv\Scripts\activate     # Windows (source .venv/bin/activate on Linux/macOS)
+pip install -r requirements.txt gradio pytest
+copy .env.example .env                              # then add GROQ_API_KEY or GEMINI_API_KEY (optional)
+python -m src.rag.build_index --ids college_lec01 college_lec02 college_lec03 college_lec04 college_lec05
+python space/app.py                                 # Gradio demo on http://127.0.0.1:7860
+uvicorn app.backend.main:app --port 8000            # API: POST /ask, GET /health
+python -m pytest tests -q                           # tests (no API calls)
+python -m eval.run                                  # evaluation -> reports/eval_results.md
+```
+
+Example API call:
+
+```bash
+curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
+     -d "{\"question\": \"Why is softmax used at the output layer?\"}"
+```
+
+Without an API key everything still runs: the app returns the most relevant lecture moments (retrieval-only mode) and the eval reports retrieval and refusal-gate metrics but marks generation metrics as not run.
+
+## Evaluation results
+
+Measured with `python -m eval.run` on 157 segments from 5 one-hour lectures: 66 in-scope questions (49 drafted from the transcripts and **not yet human-verified**, 17 human-written) and 10 out-of-scope questions. Full report: [reports/eval_results.md](reports/eval_results.md). CPU only.
+
+**All in-scope questions (n=66)**
+
+| System | Recall@5 | Recall@10 | MRR [95% CI] | nDCG@10 | latency p50 / p95 (ms) | n |
+|---|---|---|---|---|---|---|
+| BM25 only | 0.637 | 0.743 | 0.613 [0.52, 0.70] | 0.588 | 8 / 9 | 66 |
+| Dense (Sentence-BERT) only | 0.576 | 0.714 | 0.549 [0.45, 0.65] | 0.544 | 12 / 14 | 66 |
+| Dense (fusion encoder) only | 0.221 | 0.379 | 0.202 [0.13, 0.28] | 0.226 | 12 / 14 | 66 |
+| Hybrid (BM25 + Sentence-BERT) | 0.673 | 0.764 | 0.633 [0.54, 0.72] | 0.611 | 12 / 14 | 66 |
+| Current app mode ('auto') | 0.673 | 0.764 | 0.633 [0.54, 0.72] | 0.611 | 19 / 22 | 66 |
+| Hybrid + reranker, OCR-first input (original) | 0.524 | 0.686 | 0.556 [0.46, 0.66] | 0.535 | 2466 / 3817 | 66 |
+| Hybrid + reranker, transcript-first input | 0.642 | 0.777 | 0.666 [0.58, 0.76] | 0.623 | 1840 / 2283 | 66 |
+
+**Human-written questions only (n=17)**: the more realistic subset, with wide confidence intervals
+
+| System | Recall@5 | Recall@10 | MRR [95% CI] | nDCG@10 | latency p50 / p95 (ms) | n |
+|---|---|---|---|---|---|---|
+| BM25 only | 0.582 | 0.717 | 0.596 [0.40, 0.79] | 0.583 | 8 / 9 | 17 |
+| Dense (Sentence-BERT) only | 0.443 | 0.568 | 0.450 [0.26, 0.65] | 0.442 | 12 / 14 | 17 |
+| Dense (fusion encoder) only | 0.093 | 0.227 | 0.108 [0.05, 0.18] | 0.118 | 12 / 14 | 17 |
+| Hybrid (BM25 + Sentence-BERT) | 0.597 | 0.707 | 0.630 [0.44, 0.82] | 0.590 | 12 / 14 | 17 |
+| Current app mode ('auto') | 0.597 | 0.707 | 0.630 [0.44, 0.82] | 0.590 | 19 / 22 | 17 |
+| Hybrid + reranker, OCR-first input (original) | 0.444 | 0.730 | 0.508 [0.31, 0.71] | 0.529 | 2466 / 3817 | 17 |
+| Hybrid + reranker, transcript-first input | 0.460 | 0.760 | 0.521 [0.35, 0.69] | 0.527 | 1840 / 2283 | 17 |
+
+**Refusal gate** (threshold calibrated on dev questions, reported on held-out ones):
+
+- **without reranker** (confidence source: dense): threshold 0.320 chosen on 30 dev questions (balanced accuracy 1.000). On 29 held-out questions: balanced accuracy **0.875**, out-of-scope refused **0.750**, in-scope wrongly refused 0.000.
+- **with reranker** (confidence source: rerank): threshold 0.001 chosen on 30 dev questions (balanced accuracy 1.000). On 29 held-out questions: balanced accuracy **1.000**, out-of-scope refused **1.000**, in-scope wrongly refused 0.000.
+
+**Generation metrics (faithfulness, citation accuracy, end-to-end refusal, LLM latency): not run yet.** No LLM API key was available on the development machine. Set `GROQ_API_KEY` or `GEMINI_API_KEY` and re-run `python -m eval.run`; nothing is reported until then.
+
+What the numbers say:
+- **Hybrid retrieval beats either retriever alone** (MRR 0.633 vs 0.613 BM25 and 0.549 dense), and it is what the app's `auto` mode uses in practice.
+- **The reranker's input order matters a lot.** With noisy OCR text first, reranking made things worse (MRR 0.556). Transcript-first fixed it (MRR 0.666, Recall@10 0.777), but that fix was found on this same question set, so treat the gain as optimistic.
+- **On the 17 human-written questions the reranker does not help** (MRR 0.521 vs 0.630 for hybrid), and it costs about 1.8 s per query on CPU. It is kept switchable for that reason.
+- **The fusion encoder is weak** (MRR 0.20): it was trained on automatic pseudo-queries before the data fixes. Retraining on human questions is the next step.
+
+
+## Deploy to Hugging Face Spaces (free CPU)
+
+1. **Use openly licensed lectures for a public demo.** The college recordings in this repo are internal and contain students. Pick 3–5 lectures with a reuse licence (e.g. MIT OpenCourseWare on YouTube, CC BY-NC-SA 4.0). Put the files in `data/raw_videos/`, and add their title, YouTube URL, licence and attribution to `data/video_meta.json`.
+2. Build the index offline: `python -m src.rag.build_index --ids <your ids> --extract-missing` (Whisper/OCR run here, once).
+3. Package: `python space/prepare_space.py` → `build/hf_space/` (code, index, checkpoint, pinned `requirements.txt`, Space README with attribution). The script refuses to package lectures marked internal.
+4. Create a Space at huggingface.co → New Space → SDK **Gradio**, hardware **CPU basic (free)**.
+5. Push: `cd build/hf_space && git init && git remote add origin https://huggingface.co/spaces/<user>/conceptbound && git add . && git commit -m "ConceptBound demo" && git push -u origin main` (use a Hugging Face access token with write permission as the password).
+6. In the Space → Settings → **Variables and secrets**, add secret `GROQ_API_KEY` (or `GEMINI_API_KEY`) and variable `LLM_PROVIDER=groq`. The Space rebuilds automatically.
+7. First start takes a few minutes (dependency install + model download), then about 20 s per restart.
+
+## Data, licensing and privacy
+
+- The five indexed lectures are recordings of an undergraduate course at the authors' college, used internally with permission pending (see `MANUAL_TASKS.md`). They must not be redistributed, and they are excluded from git (`data/rag_index/` is ignored).
+- One recording includes a roll call with student names. Annotate `lecture_span` in `data/annotations/gold/` (or `data/video_meta.json`) so `build_index` drops anything outside teaching time.
+- For the public demo, list every lecture's source, licence and attribution in `data/video_meta.json`; `prepare_space.py` copies them into the Space README.
+
+---
+
+# Research pipeline (training, evaluation, paper)
+
+## Concept-Aware Retrieval of Lecture Video Moments
 ### using a Pedagogical Boundary Detector and Cross-Modal Segment Fusion
 
 B.Tech Final Year Project — Department of Computer Science and Engineering (AI & ML)
@@ -93,8 +231,14 @@ $env:PYTHONPATH = Resolve-Path .
 
 ## 4. End-to-end pipeline (real lecture videos)
 
+> **Ground rule:** results are only ever reported on **human gold
+> annotations** of **held-out test lectures**. Pseudo-labels and
+> pseudo-queries are training signal only: they are built from the system's
+> own inputs, so scoring against them measures nothing.
+
 ### Step 0 — Place videos
-Put your NPTEL / YouTube lecture `.mp4` files in `data/raw_videos/`.
+Put the recorded lecture files (`.mp4/.mkv/.avi/.mov/.webm`) in
+`data/raw_videos/`. Make sure you have written permission to use them.
 
 ### Step 1 — Feature extraction
 ```bash
@@ -102,89 +246,113 @@ python scripts/extract_features.py
 ```
 For each video, samples frames every `FEATURES.time_step_sec` (default 3s)
 and computes:
-- OCR text-change rate (EasyOCR/Tesseract on the board/slide region)
-- ASR transcript + topic-drift signal (Whisper + Sentence-BERT)
+- OCR text + text-change rate (EasyOCR on the **projected screen**, found
+  automatically per 5-minute chunk; override per video in
+  `data/ocr_regions.json` as `{"<video_id>": [x0, y0, x1, y1]}` in 0–1 units)
+- ASR transcript (Whisper, with hallucination filtering) + topic-drift signal
 - Visual-change rate (optical flow)
 - CLIP image embedding of the sampled frame
 
-Output: `data/features/<video_id>.npz`
+Output: `data/features/<video_id>.npz`, including the raw Whisper segments
+(`asr_segments`) and a `provenance` record (OCR engine, crop source, OCR
+coverage, Whisper model).
 
-### Step 2 — Annotate ground truth (for training/eval)
-For each video you want to use for training/evaluation, create:
+Extraction **fails loudly** if EasyOCR, Whisper or Sentence-BERT cannot load;
+there are no silent empty or random fallbacks. If EasyOCR's own model download
+stalls, fetch `craft_mlt_25k.zip` (release `pre-v1.1.6`) and
+`english_g2.zip` (release `v1.3`) from
+https://github.com/JaidedAI/EasyOCR/releases and unzip them into
+`~/.EasyOCR/model/`.
 
-`data/annotations/<video_id>_boundaries.json`
-```json
-{ "boundary_times_sec": [185.0, 612.0, 1450.0] }
-```
-
-`data/annotations/<video_id>_queries.json`
-```json
-{
-  "pairs": [
-    {"query": "explain backpropagation with an example", "start_time": 612.0, "end_time": 730.0},
-    {"query": "where is the cost function for linear regression defined?", "start_time": 60.0, "end_time": 185.0}
-  ]
-}
-```
-
-### Step 3 — Train Stage 1 (Pedagogical Boundary Detector)
+To fix already-extracted files (OCR/ASR only, CLIP is kept):
 ```bash
-python -m src.stage1_boundary.train --epochs 30 --encoder-type transformer
+python scripts/refresh_features.py --ocr --asr
 ```
-Saves the best checkpoint to `checkpoints/stage1_boundary_detector.pt`.
 
-### Step 4 — Segment all videos
+### Step 2 — Freeze a video-level split
+```bash
+python scripts/make_splits.py          # add --groups data/video_meta.json to split by course
+```
+Writes `data/splits.json`. All training scripts exclude the test videos.
+Never split by segment or query (neighbouring moments of one lecture would
+end up in both train and test).
+
+### Step 3 — Annotate gold data
+```bash
+python scripts/make_annotation_sheets.py --annotator A1
+python scripts/validate_annotations.py
+```
+Follow [docs/ANNOTATION_GUIDELINES.md](docs/ANNOTATION_GUIDELINES.md). Each
+annotator fills `data/annotations/gold/<video_id>.<annotator>.json`
+(lecture span, concept boundaries, student-style queries with time ranges).
+Double-annotate at least 20–25% of the videos. `validate_annotations.py`
+reports inter-annotator agreement in `results/annotation_report.md`.
+
+### Step 4 — Train Stage 1 (Pedagogical Boundary Detector)
+```bash
+python -m src.stage1_boundary.train --epochs 30 --encoder-type transformer --label-source auto
+```
+`--label-source auto` uses gold boundaries where a train video has them and
+pseudo-labels elsewhere (`gold` / `pseudo` force one). The checkpoint is
+selected by boundary F1 on gold val videos when they exist. Training logs go
+to `results/stage1_train_log.json`.
+
+### Step 5 — Segment all videos
 ```bash
 python scripts/segment_videos.py
 ```
-Writes `data/segments/<video_id>.json` with `[{start_idx, end_idx,
-start_time, end_time}, ...]`.
+Writes `data/segments/<video_id>.json`. Segments are kept between
+`STAGE1.min_segment_sec` (60s) and `STAGE1.max_segment_sec` (600s).
 
-### Step 5 — Compute per-segment Stage-2 features
+### Step 6 — Per-segment features and pseudo-queries
 ```bash
 python scripts/prepare_segment_features.py
-```
-Aggregates OCR/transcript text and CLIP embeddings per segment into
-`data/segments/<video_id>_segment_features.npz`.
-
-### (No manual annotations yet?) Generate pseudo-queries
-Stage 2 training requires `data/annotations/<video_id>_queries.json`. If you
-haven't written manual (query, segment) pairs yet, generate self-supervised
-pseudo-queries from each segment's own transcript/OCR text:
-```bash
 python scripts/generate_pseudo_queries.py
 ```
-This lets the full pipeline run end-to-end with zero manual work. It is a
-weaker training/eval signal than real student queries - replace these files
-with hand-written ones (Step 2 format above) whenever possible for a
-meaningful Recall@k evaluation. The script will not overwrite an existing
-`*_queries.json` (e.g. one you wrote by hand) unless you pass `--overwrite`.
+Pseudo-queries go to `data/annotations/<video_id>_pseudo_queries.json`
+(training only, never evaluated on).
 
-### Step 6 — Train Stage 2 (Segment Fusion Encoder + Query Projector)
+### Step 7 — Train Stage 2 (Segment Fusion Encoder + Query Projector)
 ```bash
 python -m src.stage2_retrieval.train --epochs 20 --fusion-mode cross_attention
 ```
-Saves the best checkpoint to `checkpoints/stage2_retrieval_model.pt`.
-Use `--fusion-mode concat` to run the concatenation-vs-cross-attention
-ablation described in the proposal.
+Add `--use-gold` to also train on gold queries of train-split videos. Use
+`--fusion-mode concat` for the fusion ablation.
 
-### Step 7 — Build the FAISS index
+### Step 8 — Build the FAISS index (for the demo app)
 ```bash
 python -m src.stage2_retrieval.index_builder
 ```
 
-### Step 8 — Evaluate against baselines
+### Step 9 — Evaluate
 ```bash
-python scripts/run_evaluation.py
+python scripts/run_evaluation.py --split val      # develop and tune here
+python scripts/run_evaluation.py --split test --rerank   # once, at the end
 ```
-Prints boundary F1 / mean IoU (Stage 1 vs. fixed-window vs. shot-detection)
-and Recall@1/5/10 / mean IoU@1 (Stage 2 vs. sliding-window retrieval).
+Compares, on gold data only:
+- **Segmentation:** Stage 1 vs the pseudo-label heuristic, TextTiling-style
+  topic drift, shot detection, and fixed 30/60/120s windows. Metrics: boundary
+  F1 at ±15s/±30s, Pk, WindowDiff, mean IoU.
+- **Retrieval:** every segmenter × {BM25, MiniLM, BGE, BM25+dense hybrid
+  (RRF), cross-encoder re-ranking, trained fusion model}, plus gold
+  segmentation as an oracle. Metrics: R@1/5/10, R@1 at IoU≥0.5, MRR,
+  mIoU@1, 95% bootstrap CIs, paired significance against fixed-60s BM25, and a
+  per-query-type breakdown.
 
-### Step 9 — Run the demo web app
+Each run writes `results/<run>/results.md`, `summary.json` and
+`per_query.jsonl` (rankings for error analysis).
+
+### Step 10 — Run the demo web app
 ```bash
 uvicorn app.backend.main:app --reload --port 8000
 ```
-Open `http://localhost:8000` and search.
+The demo uses `mode="auto"`, which falls back to BM25 + dense search when the
+neural scores look degenerate. Evaluation never uses that switch.
+
+### All in one
+```bash
+python scripts/run_full_pipeline.py
+```
 
 ---
 
@@ -264,10 +432,6 @@ uvicorn app.backend.main:app --reload --port 8000
   board/slide region via `src/feature_extraction/ocr_extractor.board_region`.
 
 
-
-  .\.venv\Scripts\python.exe scripts\run_full_pipeline.py --skip-training
-
-   uvicorn app.backend.main:app --reload --port 8000
 
 ---
 

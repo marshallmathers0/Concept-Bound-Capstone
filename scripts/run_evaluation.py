@@ -1,29 +1,33 @@
 """
-End-to-end evaluation: compares the trained Pedagogical Boundary Detector
-and Cross-Modal Retrieval model against the baselines described in the
-proposal's Section 5.2.
+Evaluate segmentation (Stage 1) and retrieval (Stage 2) on HUMAN GOLD data.
 
-Stage 1 (segmentation):
-    - Pedagogical Boundary Detector (trained)
-    - Fixed-window segmentation (60s)
-    - Shot-boundary detection (visual-signal fallback)
-  Metrics: boundary F1, mean segment IoU (vs. manually annotated boundaries
-  in `data/annotations/<video_id>_boundaries.json`)
+Only `data/annotations/gold/` is read as ground truth. Pseudo-labels and
+pseudo-queries are never used here: they are derived from the system's own
+inputs, so scoring against them measures nothing.
 
-Stage 2 (retrieval):
-    - Cross-Modal Segment Retrieval over Stage-1 segments (trained)
-    - Sliding-window retrieval without concept-aware segmentation
-  Metrics: Recall@1/5/10, mean IoU@1 (vs. (query, segment) pairs in
-  `data/annotations/<video_id>_queries.json`)
+Stage 1: every segmenter vs the primary annotator's boundaries:
+         P/R/F1 at +/-15s and +/-30s, mean IoU, Pk, WindowDiff.
+Stage 2: every (segmenter x retriever) combination on the gold queries.
+         The corpus is all evaluated videos together (course-level search).
+         R@1/5/10 (IoU >= 0.3), R@1 at IoU >= 0.5, MRR, mIoU@1,
+         with 95% bootstrap confidence intervals over queries.
+
+Every run writes results/<run_name>/ with summary.json, a markdown table and
+per-query rankings for error analysis.
 
 Usage
 -----
-    python scripts/run_evaluation.py
+    python scripts/run_evaluation.py                          # test split
+    python scripts/run_evaluation.py --split val              # tune on val, never on test
+    python scripts/run_evaluation.py --dense-models sentence-transformers/all-MiniLM-L6-v2 BAAI/bge-small-en-v1.5 --rerank
 """
 
 import argparse
+import datetime
 import glob
+import json
 import os
+import subprocess
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,203 +35,143 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 
-from config import EVAL, PATHS, STAGE1, ensure_dirs
-from src.utils.io_utils import load_features, load_json
+from config import EVAL, MODELS, PATHS, ensure_dirs
+from src.evaluation.bench import (
+    Segmenters, build_corpus, build_retrievers, evaluate_stage1, gold_queries,
+)
+from src.evaluation.retrieval_metrics import bootstrap_ci, paired_bootstrap_pvalue, per_query_metrics
+from src.utils.gold import list_gold_videos, load_gold, load_splits
 
-from src.stage1_boundary.inference import load_stage1_model, segment_video
-from src.stage1_boundary.pseudo_labels import boundaries_from_annotations
-from src.stage1_boundary.segment import boundaries_to_segments
-from src.baselines.fixed_window import fixed_window_segments
-from src.baselines.shot_detection import shot_segments_from_visual_signal
-from src.evaluation.boundary_metrics import evaluate_boundaries
-
-from src.stage2_retrieval.retrieval import LectureRetriever
-from src.baselines.sliding_window_retrieval import build_sliding_window_index, search_sliding_window
-from src.evaluation.retrieval_metrics import evaluate_retrieval
+DEFAULT_SEGMENTERS = ["stage1", "pseudo", "topic_drift", "shot", "fixed_30", "fixed_60", "fixed_120", "gold"]
 
 
-def list_feature_video_ids(features_dir):
-    paths = sorted(glob.glob(os.path.join(features_dir, "*.npz")))
-    return [os.path.splitext(os.path.basename(p))[0] for p in paths]
+def git_commit() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    except Exception:
+        return "unknown"
 
 
-def evaluate_stage1(video_ids, args):
-    if not os.path.exists(args.stage1_checkpoint):
-        print(f"[Stage 1] checkpoint not found at {args.stage1_checkpoint}, skipping.")
-        return
-
-    model = load_stage1_model(args.stage1_checkpoint, args.device)
-
-    results = {"pedagogical": [], "fixed_window": [], "shot_detection": []}
-
-    for video_id in video_ids:
-        ann_path = os.path.join(PATHS.annotations_dir, f"{video_id}_boundaries.json")
-        if not os.path.exists(ann_path):
-            continue
-
-        feats = load_features(os.path.join(args.features_dir, f"{video_id}.npz"))
-        timestamps = feats["timestamps"]
-        visual_signal = feats["visual_signal"]
-
-        ann = load_json(ann_path)
-        gt_is_boundary = boundaries_from_annotations(timestamps, ann.get("boundary_times_sec", []))
-        gt_boundary_idx = np.where(gt_is_boundary == 1)[0]
-        gt_segments = boundaries_to_segments(gt_boundary_idx, timestamps, min_segment_len_steps=1)
-
-        pred_segments = segment_video(video_id, model, args.features_dir, args.device,
-                                        threshold=args.boundary_threshold)
-        fixed_segments = fixed_window_segments(timestamps, window_sec=args.fixed_window_sec)
-        shot_segments = shot_segments_from_visual_signal(timestamps, visual_signal)
-
-        for key, segs in [("pedagogical", pred_segments),
-                           ("fixed_window", fixed_segments),
-                           ("shot_detection", shot_segments)]:
-            metrics = evaluate_boundaries(segs, gt_segments, total_steps=len(timestamps),
-                                           tolerance=EVAL.boundary_tolerance_steps)
-            results[key].append(metrics)
-
-    print("\n=== Stage 1: Boundary Detection ===")
-    for key, all_metrics in results.items():
-        if not all_metrics:
-            continue
-        avg = {m: float(np.mean([r[m] for r in all_metrics])) for m in ["precision", "recall", "f1", "mean_iou"]}
-        print(f"  {key:16s}: F1={avg['f1']:.3f}  Precision={avg['precision']:.3f}  "
-              f"Recall={avg['recall']:.3f}  mean_IoU={avg['mean_iou']:.3f}  (n={len(all_metrics)} videos)")
-
-
-def evaluate_stage2(video_ids, args):
-    if not os.path.exists(args.stage2_checkpoint):
-        print(f"\n[Stage 2] checkpoint not found at {args.stage2_checkpoint}, skipping.")
-        return
-    if not os.path.exists(os.path.join(args.index_dir, "segments.index")):
-        print(f"\n[Stage 2] FAISS index not found in {args.index_dir}, skipping. Run build_index.py first.")
-        return
-
-    retriever = LectureRetriever(args.index_dir, args.stage2_checkpoint, args.device)
-
-    sw_video_ids = [v for v in video_ids if os.path.exists(os.path.join(args.features_dir, f"{v}.npz"))]
-    sw_embeddings, sw_metadata = build_sliding_window_index(sw_video_ids, features_dir=args.features_dir, device=args.device)
-
-    retrieved_main, retrieved_sw, ground_truth = [], [], []
-
-    for video_id in video_ids:
-        ann_path = os.path.join(PATHS.annotations_dir, f"{video_id}_queries.json")
-        if not os.path.exists(ann_path):
-            continue
-        ann = load_json(ann_path)
-
-        for pair in ann["pairs"]:
-            results_main = retriever.search(pair["query"], top_k=max(EVAL.retrieval_ks))
-            results_sw = search_sliding_window(pair["query"], sw_embeddings, sw_metadata,
-                                                 top_k=max(EVAL.retrieval_ks), device=args.device) if len(sw_embeddings) else []
-
-            retrieved_main.append(results_main)
-            retrieved_sw.append(results_sw)
-            ground_truth.append({"video_id": video_id, "start_time": pair["start_time"], "end_time": pair["end_time"]})
-
-    print("\n=== Stage 2: Cross-Modal Retrieval ===")
-    if retrieved_main:
-        main_metrics = evaluate_retrieval(retrieved_main, ground_truth)
-        print(f"  cross_modal_fusion : " + "  ".join(f"{k}={v:.3f}" for k, v in main_metrics.items()) +
-              f"  (n={len(ground_truth)} queries)")
-    if retrieved_sw:
-        sw_metrics = evaluate_retrieval(retrieved_sw, ground_truth)
-        print(f"  sliding_window     : " + "  ".join(f"{k}={v:.3f}" for k, v in sw_metrics.items()))
-
-
-def evaluate_gold_standard(args):
-    """Evaluate retrieval on human-annotated gold-standard annotations.
-
-    Gold annotations are loaded from data/annotations/gold_standard/<video_id>_gold.json
-    and evaluated with ±tolerance_sec (default ±10s).
-    """
-    gold_dir = os.path.join(PATHS.annotations_dir, "gold_standard")
-    gold_files = sorted(glob.glob(os.path.join(gold_dir, "*_gold.json")))
-
-    if not gold_files:
-        print(f"\n[Gold Standard] No annotation files found in {gold_dir}")
-        print(f"  Create annotations following the template in {gold_dir}/README.md")
-        return
-
-    if not os.path.exists(os.path.join(args.index_dir, "segments.index")):
-        print(f"\n[Gold Standard] FAISS index not found in {args.index_dir}, skipping.")
-        return
-
-    retriever = LectureRetriever(args.index_dir, args.stage2_checkpoint, args.device)
-
-    retrieved_all, ground_truth_all = [], []
-    source_counts = {"nptel": 0, "local": 0, "other": 0}
-
-    for gold_path in gold_files:
-        ann = load_json(gold_path)
-        video_id = ann.get("video_id", os.path.basename(gold_path).replace("_gold.json", ""))
-        source = ann.get("source", "other")
-
-        # Filter by split if specified
-        if args.split and args.split != source:
-            continue
-
-        source_counts[source] = source_counts.get(source, 0) + len(ann.get("annotations", []))
-
-        for item in ann.get("annotations", []):
-            results = retriever.search(item["query"], top_k=max(EVAL.retrieval_ks))
-            retrieved_all.append(results)
-            ground_truth_all.append({
-                "video_id": video_id,
-                "start_time": item["start_time"],
-                "end_time": item["end_time"],
-            })
-
-    if not retrieved_all:
-        print(f"\n[Gold Standard] No queries found (split={args.split or 'all'})")
-        return
-
-    tolerance = EVAL.retrieval_tolerance_sec
-    metrics = evaluate_retrieval(retrieved_all, ground_truth_all,
-                                  tolerance_sec=tolerance)
-
-    from src.evaluation.retrieval_metrics import precision_recall_f1
-    prf = precision_recall_f1(retrieved_all, ground_truth_all,
-                               tolerance_sec=tolerance)
-
-    print(f"\n=== Gold-Standard Evaluation (±{tolerance:.0f}s tolerance) ===")
-    split_label = f" [{args.split}]" if args.split else ""
-    print(f"  Queries: {len(ground_truth_all)}{split_label}")
-    print(f"  Sources: " + ", ".join(f"{k}={v}" for k, v in source_counts.items() if v > 0))
-    print(f"  " + "  ".join(f"{k}={v:.3f}" for k, v in metrics.items()))
-    print(f"  Precision={prf['precision']:.3f}  Recall={prf['recall']:.3f}  "
-          f"F1={prf['f1']:.3f}  (TP={prf['tp']} FP={prf['fp']} FN={prf['fn']})")
+def fmt_ci(m, lo, hi):
+    return f"{m:.3f} [{lo:.3f}, {hi:.3f}]"
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--features-dir", default=PATHS.features_dir)
-    parser.add_argument("--index-dir", default=PATHS.index_dir)
+    parser.add_argument("--split", default="test", choices=["train", "val", "test", "all"])
+    parser.add_argument("--segmenters", nargs="+", default=DEFAULT_SEGMENTERS)
+    parser.add_argument("--dense-models", nargs="+",
+                        default=[MODELS.sentence_bert, MODELS.dense_baseline])
+    parser.add_argument("--rerank", action="store_true", help="Add cross-encoder re-ranking of the hybrid run.")
     parser.add_argument("--stage1-checkpoint", default=os.path.join(PATHS.checkpoints_dir, "stage1_boundary_detector.pt"))
     parser.add_argument("--stage2-checkpoint", default=os.path.join(PATHS.checkpoints_dir, "stage2_retrieval_model.pt"))
-    parser.add_argument("--boundary-threshold", type=float, default=None,
-                         help="Fixed boundary-score threshold. Default: adaptive (mean + std).")
-    parser.add_argument("--fixed-window-sec", type=float, default=60.0)
+    parser.add_argument("--run-name", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--gold-standard", action="store_true",
-                         help="Evaluate on gold-standard human annotations with ±10s tolerance.")
-    parser.add_argument("--split", choices=["nptel", "local"], default=None,
-                         help="Evaluate only on a specific data source split (nptel=train, local=test).")
     args = parser.parse_args()
-
     ensure_dirs()
-    video_ids = list_feature_video_ids(args.features_dir)
-    if not video_ids:
-        print(f"No feature files found in {args.features_dir}.")
-        return
 
-    evaluate_stage1(video_ids, args)
-    evaluate_stage2(video_ids, args)
+    all_ids = [os.path.splitext(os.path.basename(p))[0]
+               for p in sorted(glob.glob(os.path.join(PATHS.features_dir, "*.npz")))]
+    split = load_splits(all_ids)
+    pool = all_ids if args.split == "all" else split[args.split]
+    gold_ids = [v for v in pool if v in set(list_gold_videos())]
 
-    if args.gold_standard:
-        evaluate_gold_standard(args)
+    if not gold_ids:
+        print(f"No human gold annotations for the '{args.split}' split ({len(pool)} videos: {pool}).\n"
+              f"Nothing can be evaluated honestly. Annotate them first:\n"
+              f"  python scripts/make_annotation_sheets.py --videos {' '.join(pool)}\n"
+              f"  (see docs/ANNOTATION_GUIDELINES.md), then python scripts/validate_annotations.py")
+        sys.exit(2)
+    missing = sorted(set(pool) - set(gold_ids))
+    if missing:
+        print(f"WARNING: {len(missing)} {args.split} video(s) have no gold yet and are excluded: {missing}")
+
+    run = args.run_name or datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{args.split}"
+    out_dir = os.path.join(PATHS.results_dir, run)
+    os.makedirs(out_dir, exist_ok=True)
+    segs = Segmenters(args.stage1_checkpoint, args.device)
+    seg_names = segs.names(args.segmenters)
+    if "gold" in seg_names and not any((load_gold(v) or {}).get("boundaries_sec") for v in gold_ids):
+        print("No gold boundaries yet: skipping the 'gold' (oracle) segmenter.")
+        seg_names.remove("gold")
+
+    # ---------------- Stage 1 ----------------
+    stage1 = evaluate_stage1(gold_ids, seg_names, segs)
+    lines = [f"# Evaluation `{run}` (split={args.split}, videos={len(gold_ids)}, commit={git_commit()})", "",
+             "## Stage 1: segmentation vs gold boundaries", "",
+             "| segmenter | F1@15s | F1@30s | Pk (lower=better) | WindowDiff | mean IoU | #segments (gold) |",
+             "|---|---|---|---|---|---|---|"]
+    for name, m in stage1["summary"].items():
+        lines.append(f"| {name} | {m['f1@5']:.3f} | {m['f1@10']:.3f} | {m['pk']:.3f} | {m['windowdiff']:.3f} | "
+                     f"{m['mean_iou']:.3f} | {m['n_pred_segments']:.1f} ({m['n_gt_segments']:.1f}) |")
+
+    # ---------------- Stage 2 ----------------
+    queries = gold_queries(gold_ids)
+    stage2, per_query_rows = {}, []
+    lines += ["", f"## Stage 2: retrieval ({len(queries)} gold queries, corpus = {len(gold_ids)} videos)", "",
+              "| segmenter | retriever | R@1 [95% CI] | R@5 [95% CI] | R@10 | R@1 (IoU≥0.5) | MRR [95% CI] | mIoU@1 | #units |",
+              "|---|---|---|---|---|---|---|---|---|"]
+    if not queries:
+        lines.append("| (no gold queries) |||||||||")
+    for seg_name in seg_names if queries else []:
+        units = build_corpus(gold_ids, seg_name, segs)
+        retrievers = build_retrievers(units, args.dense_models, args.stage2_checkpoint, args.rerank, args.device)
+        for r in retrievers:
+            per_q = []
+            for q in queries:
+                res = r.search(q["query"], top_k=max(EVAL.retrieval_ks))
+                m = per_query_metrics(res, q)
+                per_q.append(m)
+                per_query_rows.append({"segmenter": seg_name, "retriever": r.name, **q, **m,
+                                       "top5": [(x["video_id"], x["start_time"], x["end_time"]) for x in res[:5]]})
+            key = f"{seg_name}|{r.name}"
+            stage2[key] = {"segmenter": seg_name, "retriever": r.name, "n_units": len(units),
+                           "per_query": per_q}
+            ci = {k: bootstrap_ci([p[k] for p in per_q]) for k in per_q[0]}
+            stage2[key]["metrics"] = {k: {"mean": v[0], "ci95": [v[1], v[2]]} for k, v in ci.items()}
+            lines.append(f"| {seg_name} | {r.name} | {fmt_ci(*ci['R@1'])} | {fmt_ci(*ci['R@5'])} | "
+                         f"{ci['R@10'][0]:.3f} | {ci['R@1_iou0.5'][0]:.3f} | {fmt_ci(*ci['MRR'])} | "
+                         f"{ci['mIoU@1'][0]:.3f} | {len(units)} |")
+
+    # Is the trained system significantly better than plain BM25 on fixed windows?
+    ref = "fixed_60|bm25"
+    if ref in stage2:
+        lines += ["", f"### Paired bootstrap vs `{ref}` (MRR, one-sided p that the system is not better)", ""]
+        for key, v in stage2.items():
+            if key == ref:
+                continue
+            p = paired_bootstrap_pvalue([x["MRR"] for x in v["per_query"]],
+                                        [x["MRR"] for x in stage2[ref]["per_query"]])
+            lines.append(f"- `{key}`: p = {p:.3f}")
+
+    # Breakdown by query type for the best run.
+    if stage2:
+        best = max(stage2, key=lambda k: stage2[k]["metrics"]["MRR"]["mean"])
+        lines += ["", f"### Query-type breakdown for best run `{best}` (by MRR)", "", "| type | n | R@1 | MRR |", "|---|---|---|---|"]
+        rows = [r for r in per_query_rows if f"{r['segmenter']}|{r['retriever']}" == best]
+        for t in sorted(set(r["type"] for r in rows)):
+            sel = [r for r in rows if r["type"] == t]
+            lines.append(f"| {t} | {len(sel)} | {np.mean([r['R@1'] for r in sel]):.3f} | {np.mean([r['MRR'] for r in sel]):.3f} |")
+
+    lines += ["", "Hit = top result in the right video with temporal IoU ≥ "
+              f"{EVAL.retrieval_iou_threshold} against the gold moment. CIs: percentile bootstrap over queries."]
+
+    summary = {
+        "run": run, "split": args.split, "videos": gold_ids, "excluded_no_gold": missing,
+        "commit": git_commit(), "args": vars(args), "eval_config": EVAL.__dict__,
+        "stage1": stage1,
+        "stage2": {k: {kk: vv for kk, vv in v.items() if kk != "per_query"} for k, v in stage2.items()},
+    }
+    with open(os.path.join(out_dir, "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, default=float)
+    with open(os.path.join(out_dir, "per_query.jsonl"), "w", encoding="utf-8") as f:
+        for row in per_query_rows:
+            f.write(json.dumps(row, default=float) + "\n")
+    with open(os.path.join(out_dir, "results.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines))
+    print(f"\nSaved to {out_dir}")
 
 
 if __name__ == "__main__":
     main()
-

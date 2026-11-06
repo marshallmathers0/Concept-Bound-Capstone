@@ -30,6 +30,10 @@ class TextEncoder:
     def encode(self, texts: List[str]) -> np.ndarray:
         return self._sbert.encode(texts)
 
+    def encode_long(self, texts: List[str]) -> np.ndarray:
+        """Chunk-and-average encoding for segment-length texts."""
+        return self._sbert.encode_long(texts)
+
 
 class VisualEncoder:
     """Thin convenience wrapper around the frozen CLIP image encoder."""

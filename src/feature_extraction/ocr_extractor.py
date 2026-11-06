@@ -11,9 +11,10 @@ Two backends are supported:
   - EasyOCR (default, GPU-accelerated if available)
   - Tesseract via pytesseract (lighter, CPU-only)
 
-Both are *frozen* - no training happens here. If neither OCR engine is
-installed, a deterministic dummy backend is used so the rest of the pipeline
-can still run (useful for smoke-testing on machines without OCR installed).
+Both are *frozen* - no training happens here. If the requested engine cannot
+be loaded, `get_ocr_backend` raises instead of silently returning an empty
+backend: an all-zero OCR signal would quietly remove a whole modality from
+every downstream experiment.
 """
 
 from dataclasses import dataclass
@@ -80,7 +81,15 @@ class DummyOCRBackend(BaseOCRBackend):
         return ""
 
 
-def get_ocr_backend(engine: str = "easyocr", gpu: Optional[bool] = None) -> BaseOCRBackend:
+def get_ocr_backend(engine: str = "easyocr", gpu: Optional[bool] = None,
+                    allow_dummy: bool = False) -> BaseOCRBackend:
+    """Load the requested OCR engine.
+
+    Raises RuntimeError if it cannot be loaded, unless `allow_dummy=True`
+    (smoke tests only). EasyOCR downloads its weights on first use; if that
+    download fails, fetch craft_mlt_25k.pth and english_g2.pth into
+    ~/.EasyOCR/model/ manually (see README).
+    """
     # Auto-detect GPU if not explicitly provided
     if gpu is None:
         try:
@@ -89,36 +98,116 @@ def get_ocr_backend(engine: str = "easyocr", gpu: Optional[bool] = None) -> Base
         except ImportError:
             gpu = False
 
-    if engine == "easyocr":
-        try:
+    try:
+        if engine == "easyocr":
             return EasyOCRBackend(gpu=gpu)
-        except Exception:
-            pass
-    if engine == "tesseract":
-        try:
+        if engine == "tesseract":
+            import pytesseract
+            pytesseract.get_tesseract_version()  # fails fast if binary is missing
             return TesseractBackend()
-        except Exception:
-            pass
-    return DummyOCRBackend()
+        raise ValueError(f"Unknown OCR engine '{engine}'")
+    except Exception as e:
+        if allow_dummy:
+            print(f"[OCR] WARNING: {engine} unavailable ({e}); using EMPTY dummy OCR.")
+            return DummyOCRBackend()
+        raise RuntimeError(f"OCR engine '{engine}' could not be loaded: {e}") from e
 
 
 def board_region(frame: np.ndarray, bbox: Optional[Tuple[float, float, float, float]] = None) -> np.ndarray:
     """Crop the board/slide region of a frame.
 
     `bbox` is given as fractional (x_min, y_min, x_max, y_max) in [0, 1].
-    If not provided, the full frame is used. In a real deployment this bbox
-    would be calibrated per camera setup (or detected automatically), but a
-    sensible default is to crop out a thin strip of UI chrome at the edges.
+    Use `detect_screen_bbox` (or a manual entry in data/ocr_regions.json) to
+    get it. The fallback default trims the frame edges, where recorder
+    overlays (CCTV clock, watermarks) live: OCR-ing a ticking clock would make
+    the text-change signal fire on every frame.
     """
     h, w = frame.shape[:2]
     if bbox is None:
-        # Tighter crop to exclude typical lecture video watermarks, channel
-        # logos, and UI chrome that appear at the edges/corners (e.g.
-        # "SAVE MORE", "NPTEL" banners).  This dramatically improves OCR
-        # quality on real NPTEL / YouTube lecture recordings.
         bbox = (0.05, 0.10, 0.95, 0.85)
     x0, y0, x1, y1 = bbox
     return frame[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)]
+
+
+def detect_screen_bbox(frames: List[np.ndarray], num_samples: int = 60,
+                       min_area_frac: float = 0.03,
+                       pad_frac: float = 0.01) -> Optional[Tuple[float, float, float, float]]:
+    """Locate the projected slide / screen in a fixed-camera classroom video.
+
+    The projected screen is the largest bright, roughly rectangular region
+    that stays put across the lecture. We take the per-pixel median over
+    `num_samples` evenly spaced frames (which removes the moving instructor),
+    Otsu-threshold it, and return the bounding box of the largest bright
+    blob with a screen-like aspect ratio. Returns None if nothing plausible
+    is found (caller then falls back to `board_region`'s default crop).
+    """
+    import cv2
+
+    if not frames:
+        return None
+    idx = np.linspace(0, len(frames) - 1, min(num_samples, len(frames))).astype(int)
+    gray = np.stack([cv2.cvtColor(frames[i], cv2.COLOR_RGB2GRAY) for i in idx])
+    median = np.median(gray, axis=0).astype(np.uint8)
+    h, w = median.shape
+
+    _, mask = cv2.threshold(cv2.GaussianBlur(median, (5, 5), 0), 0, 255,
+                            cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    best, best_area = None, 0.0
+    for c in contours:
+        x, y, bw, bh = cv2.boundingRect(c)
+        area = bw * bh
+        aspect = bw / max(bh, 1)
+        fill = cv2.contourArea(c) / max(area, 1)
+        if area < min_area_frac * h * w or not (1.0 <= aspect <= 2.6) or fill < 0.6:
+            continue
+        if area > best_area:
+            best, best_area = (x, y, x + bw, y + bh), area
+    if best is None:
+        return None
+
+    x0, y0, x1, y1 = best
+    return (max(0.0, x0 / w - pad_frac), max(0.0, y0 / h - pad_frac),
+            min(1.0, x1 / w + pad_frac), min(1.0, y1 / h + pad_frac))
+
+
+def resolve_ocr_bboxes(video_id: str, frames: List[np.ndarray],
+                       overrides_path: Optional[str] = None,
+                       chunk_steps: int = 100) -> Tuple[List[Optional[Tuple[float, float, float, float]]], dict]:
+    """Return one crop bbox per frame, plus a summary of where they came from.
+
+    Priority: a manual entry in data/ocr_regions.json (applied to the whole
+    video) > automatic screen detection per chunk of `chunk_steps` frames
+    (camera framing can change mid-recording) > detection over the whole
+    video > None (board_region's default edge-trim crop).
+    """
+    import json
+    import os
+
+    T = len(frames)
+    if overrides_path and os.path.exists(overrides_path):
+        with open(overrides_path, "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        if video_id in overrides:
+            bbox = tuple(float(v) for v in overrides[video_id])
+            return [bbox] * T, {"manual": T}
+
+    global_bbox = detect_screen_bbox(frames)
+    bboxes, summary = [], {"auto_chunk": 0, "auto_global": 0, "default": 0}
+    for start in range(0, T, chunk_steps):
+        chunk = frames[start:start + chunk_steps]
+        bbox = detect_screen_bbox(chunk, num_samples=20)
+        if bbox is not None:
+            key = "auto_chunk"
+        elif global_bbox is not None:
+            bbox, key = global_bbox, "auto_global"
+        else:
+            key = "default"
+        bboxes.extend([bbox] * len(chunk))
+        summary[key] += len(chunk)
+    return bboxes, summary
 
 
 def compute_ssim(frame_a: np.ndarray, frame_b: np.ndarray) -> float:
