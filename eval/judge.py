@@ -5,7 +5,7 @@ The judge sees ONLY the segments the answer cited and the answer itself, and
 labels each claim supported / unsupported with a fixed rubric (prompts.py).
 Faithfulness = supported claims / total claims, averaged over answers.
 
-Limitations (also in LEARNING.md): the judge is itself an LLM, so it can be
+Limitations (also in DEVLOG.md): the judge is itself an LLM, so it can be
 lenient towards fluent text, may share biases with the generator when it is
 the same model family, splits claims inconsistently, and is not a substitute
 for spot-checking answers by hand.

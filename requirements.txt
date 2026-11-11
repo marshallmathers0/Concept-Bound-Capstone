@@ -35,3 +35,11 @@ matplotlib>=3.8
 # Text processing (hybrid topic drift, BM25 fallback)
 scikit-learn>=1.3
 rank-bm25>=0.2.2
+
+# RAG layer: API, demo, LLM providers
+gradio>=5,<6
+requests>=2.31
+python-dotenv>=1.0
+
+# Tests
+pytest>=8
