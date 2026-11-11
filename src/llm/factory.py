@@ -11,7 +11,8 @@ def get_llm_client(provider: Optional[str] = None) -> Optional[LLMClient]:
     retrieval-only mode instead of failing."""
     try:
         from dotenv import load_dotenv
-        load_dotenv()
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        load_dotenv(os.path.join(root, ".env"))
     except ImportError:
         pass
     provider = (provider or os.environ.get("LLM_PROVIDER", "")).strip().lower()

@@ -7,7 +7,9 @@ recognition and may contain errors).
 
 Rules:
 1. Use only information in the provided segments. Do not add facts from your own knowledge.
-2. Cite every factual sentence with the label(s) of the segment(s) that support it, like [S2].
+2. End EVERY sentence with the label(s) of the segment(s) that support it, for example: \
+"Softmax turns the network's raw scores into probabilities [S1]." Never write a sentence without a label; \
+if no segment supports a sentence, leave that sentence out.
 3. If the segments do not contain the answer, set "covered" to false and say briefly that the indexed \
 lectures do not cover it.
 4. Be clear and concise (at most about 150 words). Explain in plain language suitable for a student.

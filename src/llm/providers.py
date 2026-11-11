@@ -24,14 +24,43 @@ def _timeout() -> float:
 class GroqClient(LLMClient):
     name = "groq"
     URL = "https://api.groq.com/openai/v1/chat/completions"
+    MODELS_URL = "https://api.groq.com/openai/v1/models"
+    # Preference order when the configured model has been retired by Groq
+    # (Groq retires models regularly; llama-3.1-8b-instant disappeared in 2026).
+    PREFERRED = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b",
+                 "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
     def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("GROQ_API_KEY")
         if not self.api_key:
             raise MissingAPIKeyError("GROQ_API_KEY is not set. Create a free key at console.groq.com and export it.")
-        self.model = model or os.environ.get("LLM_MODEL", "llama-3.1-8b-instant")
+        self.model = model or os.environ.get("LLM_MODEL", self.PREFERRED[0])
+
+    def _pick_available_model(self) -> Optional[str]:
+        import requests
+        try:
+            r = requests.get(self.MODELS_URL, headers={"Authorization": f"Bearer {self.api_key}"}, timeout=_timeout())
+            ids = {m["id"] for m in r.json().get("data", []) if m.get("active", True)} if r.ok else set()
+        except Exception:
+            return None
+        return next((m for m in self.PREFERRED if m in ids and m != self.model), None)
 
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
+        try:
+            return self._complete(system, user, json_mode)
+        except LLMError as e:
+            if "model_not_found" not in str(e) and "decommissioned" not in str(e):
+                raise
+            replacement = self._pick_available_model()
+            if not replacement:
+                raise LLMError(f"Groq model '{self.model}' is not available and no known replacement was found. "
+                               f"Set LLM_MODEL in .env to a model listed at console.groq.com/docs/models.") from e
+            print(f"[GroqClient] Model '{self.model}' is unavailable; switching to '{replacement}'. "
+                  f"Set LLM_MODEL={replacement} in .env to make this permanent.")
+            self.model = replacement
+            return self._complete(system, user, json_mode)
+
+    def _complete(self, system: str, user: str, json_mode: bool = True) -> str:
         payload = {"model": self.model, "temperature": 0.0,
                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         if json_mode:

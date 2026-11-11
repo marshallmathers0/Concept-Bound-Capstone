@@ -18,6 +18,20 @@ import os
 import re
 import sys
 
+if sys.platform == "win32":
+    # Browsers drop keep-alive connections; Windows' Proactor event loop then
+    # prints a harmless "ConnectionResetError [WinError 10054]" traceback.
+    import asyncio.proactor_events as _pe
+    _orig_lost = _pe._ProactorBasePipeTransport._call_connection_lost
+
+    def _quiet_connection_lost(self, exc):
+        try:
+            _orig_lost(self, exc)
+        except ConnectionResetError:
+            pass
+
+    _pe._ProactorBasePipeTransport._call_connection_lost = _quiet_connection_lost
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = HERE if os.path.isdir(os.path.join(HERE, "src")) else os.path.dirname(HERE)
 sys.path.insert(0, ROOT)

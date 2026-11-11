@@ -49,6 +49,7 @@ def test_explicit_provider_without_key_raises(monkeypatch):
 class FakeResp:
     def __init__(self, code, body=None, headers=None):
         self.status_code, self._body, self.headers, self.text = code, body or {}, headers or {}, str(body)
+        self.ok = code < 400
 
     def json(self):
         return self._body
@@ -69,3 +70,35 @@ def test_post_json_gives_clear_errors(monkeypatch):
     monkeypatch.setattr(llm_base.requests, "post", lambda *a, **k: FakeResp(401))
     with pytest.raises(LLMError, match="API key"):
         post_json("http://x", {}, retries=2, provider="Test")
+
+
+@pytest.mark.parametrize("q", ["Why is softmax used at the output layer?",
+                               "How does a bigram model generate a sentence?",
+                               "What is an example of an encoder-decoder task?"])
+def test_standalone_why_how_questions_are_not_follow_ups(q):
+    hist = [{"role": "user", "content": "pagination"}]
+    assert not is_follow_up(q)
+    assert rewrite_query(q, hist) == q
+
+
+@pytest.mark.parametrize("q", ["explain it more simply", "why is that?", "give another example", "and RNNs?"])
+def test_real_follow_ups_are_detected(q):
+    assert is_follow_up(q)
+
+
+def test_groq_switches_to_available_model_when_retired(monkeypatch):
+    from src.llm import providers
+    monkeypatch.setattr(llm_base.time, "sleep", lambda s: None)
+    calls = []
+
+    def fake_post(url, json=None, **k):
+        calls.append(json["model"])
+        if json["model"] == "retired-model":
+            return FakeResp(404, {"error": {"code": "model_not_found"}})
+        return FakeResp(200, {"choices": [{"message": {"content": '{"answer": "ok"}'}}]})
+
+    monkeypatch.setattr(llm_base.requests, "post", fake_post)
+    monkeypatch.setattr("requests.get", lambda *a, **k: FakeResp(200, {"data": [{"id": "openai/gpt-oss-20b"}]}))
+    c = providers.GroqClient(model="retired-model", api_key="gsk_test")
+    assert c.complete("s", "u") == '{"answer": "ok"}'
+    assert c.model == "openai/gpt-oss-20b" and calls == ["retired-model", "openai/gpt-oss-20b"]

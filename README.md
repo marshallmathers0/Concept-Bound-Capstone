@@ -49,7 +49,7 @@ B.Tech final-year project, Department of Computer Science and Engineering (AI & 
 - **Hybrid retrieval.** BM25 + Sentence-BERT dense search, with an optional cross-encoder reranker.
 - **Refuses instead of hallucinating.** A calibrated confidence gate answers *"This isn't covered in the indexed lectures"* for off-topic questions; citations the model invents are removed.
 - **Follow-up questions.** "Explain it more simply" understands what "it" refers to.
-- **Pluggable LLMs.** Groq, Google Gemini or local Ollama, chosen by an environment variable; it works without any key in retrieval-only mode.
+- **Pluggable LLMs.** Groq (default `openai/gpt-oss-20b`), Google Gemini or local Ollama, chosen by an environment variable; it works without any key in retrieval-only mode.
 - **Measured, not claimed.** A built-in evaluation produces Recall@k, MRR, nDCG, refusal accuracy and latency.
 - **Runs on a CPU.** Heavy processing happens offline; the app loads precomputed indexes and starts in seconds.
 

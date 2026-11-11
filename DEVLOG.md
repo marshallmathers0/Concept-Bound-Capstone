@@ -225,7 +225,7 @@ Segments outside an annotated `lecture_span` are dropped, which removes pre-clas
 
 ### LLM providers (`src/llm/`)
 - **Interface.** One method, `LLMClient.complete(system, user, json_mode)`.
-- **Implementations:** **Groq** (OpenAI-compatible API), **Gemini** (REST), **Ollama** (local) and a **Mock** for tests.
+- **Implementations:** **Groq** (OpenAI-compatible API; default `openai/gpt-oss-20b`, auto-switches if Groq retires a model), **Gemini** (REST), **Ollama** (local) and a **Mock** for tests.
 - **Selection.** `LLM_PROVIDER` picks one; keys come only from environment variables (`.env`, Space secrets).
 - **Robustness.** `post_json()` adds a timeout, retries 429/5xx/timeouts with **exponential backoff and jitter**, honours `Retry-After`, and turns failures into clear exceptions (`MissingAPIKeyError`, `RateLimitError`, `LLMTimeoutError`).
 

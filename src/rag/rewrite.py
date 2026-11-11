@@ -13,12 +13,17 @@ import os
 import re
 from typing import List, Optional
 
-FOLLOW_UP = re.compile(r"\b(it|its|this|that|these|those|they|them|he|she|more|again|simpler|simply|"
-                       r"another|example|elaborate|why|how so|same|above|previous)\b", re.I)
+# Words/phrases that point back to the previous turn. Deliberately NOT plain
+# "why"/"how"/"example": "Why is softmax used?" is a standalone question.
+FOLLOW_UP = re.compile(
+    r"\b(it|its|this|that|these|those|they|them|the same|the above|the previous)\b"
+    r"|\b(more simply|in simpler|simpler terms|explain more|tell me more|more detail|elaborate|"
+    r"again|another example|give an example|an example of it|how so|why is that|what about)\b", re.I)
 
 
 def is_follow_up(question: str) -> bool:
-    return len(question.split()) <= 6 or bool(FOLLOW_UP.search(question))
+    """Short questions ("and RNNs?") or ones that refer back to the last turn."""
+    return len(question.split()) <= 4 or bool(FOLLOW_UP.search(question))
 
 
 def rewrite_query(question: str, history: List, llm=None, max_turns: int = 3) -> str:
