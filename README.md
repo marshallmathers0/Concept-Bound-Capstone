@@ -6,7 +6,7 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688)
 ![Gradio](https://img.shields.io/badge/demo-Gradio-f97316)
-![Tests](https://img.shields.io/badge/tests-25%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)
 
 > **Live demo:** _coming soon (Hugging Face Space)_ · **Demo video:** _coming soon_
 >
@@ -19,8 +19,39 @@ B.Tech final-year project, Department of Computer Science and Engineering (AI & 
 
 ---
 
+## Quick start: run the demo in 5 steps
+
+You need Python 3.10+ and the prebuilt index in `data/rag_index/` (the course team has it; see [Data and models](#data-and-models) to build your own).
+
+1. **Get the code and a virtual environment:**
+   ```bash
+   git clone https://github.com/marshallmathers0/Concept-Bound-Capstone.git
+   cd Concept-Bound-Capstone
+   python -m venv .venv
+   ```
+2. **Install the dependencies:**
+   ```bash
+   .venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
+   On macOS/Linux use `.venv/bin/python` here and below.
+3. **Add a free LLM key (optional, but needed for written answers):**
+   ```bash
+   copy .env.example .env
+   ```
+   Then put `LLM_PROVIDER=groq` and `GROQ_API_KEY=<your key from console.groq.com/keys>` in `.env`.
+4. **Start the demo:**
+   ```bash
+   .venv\Scripts\python.exe space\app.py
+   ```
+5. **Open http://127.0.0.1:7860** and ask, for example, *"Why is softmax used at the output layer?"*
+
+Without a key the demo runs in retrieval-only mode and shows the most relevant lecture moments. Stop it with `Ctrl+C`. If it misbehaves, see [Troubleshooting](#troubleshooting). Full details for every part (API, tests, evaluation, rebuilding from raw videos) follow below, and in [DEVLOG.md, Part II](DEVLOG.md#part-ii-running-the-project).
+
+---
+
 ## Table of contents
 
+- [Quick start: run the demo in 5 steps](#quick-start-run-the-demo-in-5-steps)
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Tech stack](#tech-stack)
@@ -31,6 +62,7 @@ B.Tech final-year project, Department of Computer Science and Engineering (AI & 
 - [Evaluation results](#evaluation-results)
 - [Running the tests](#running-the-tests)
 - [Deployment (Hugging Face Spaces)](#deployment-hugging-face-spaces)
+- [Troubleshooting](#troubleshooting)
 - [Data, privacy and licensing](#data-privacy-and-licensing)
 - [Limitations and roadmap](#limitations-and-roadmap)
 - [Documentation](#documentation)
@@ -334,7 +366,7 @@ Produced by `python -m eval.run` on **157 segments from 5 one-hour lectures**, w
 - **The reranker's gain depends on how its input is built,** and it does not help on the human-written questions yet, so it is switchable.
 - **The fusion encoder needs retraining** on real questions.
 
-The analysis is in [DEVLOG.md, Part V](DEVLOG.md#part-v-results).
+The analysis is in [DEVLOG.md, Part VII](DEVLOG.md#part-vii-results).
 
 ## Running the tests
 
@@ -342,50 +374,78 @@ The analysis is in [DEVLOG.md, Part V](DEVLOG.md#part-v-results).
 python -m pytest tests -q
 ```
 
-The suite has 25 tests. The LLM is mocked, so there are no API calls. It covers:
+The suite has 33 tests and takes about 30 seconds. The LLM is mocked, so there are no API calls. It covers:
 
 - retrieval on the built index (skipped if no index exists);
 - citation validation dropping fake IDs;
 - refusal on low confidence;
 - parsing malformed LLM output;
 - retries and backoff;
+- the Groq retired-model fallback;
+- follow-up detection (real follow-ups vs standalone "why/how" questions);
 - follow-up rewriting and the context budget.
 
 ## Deployment (Hugging Face Spaces)
 
-The free CPU tier is enough.
+The free **CPU basic** tier is enough. The heavy work (Whisper, OCR, both models) happens offline, so the Space only needs the inference code, the index (about 0.9 MB) and the Stage 2 checkpoint (about 8 MB): **about 9.4 MB in total, with no video files.**
 
-1. **Use openly licensed lectures** (for example MIT OpenCourseWare on YouTube, CC BY-NC-SA). Add their title, URL, licence and attribution to `data/video_meta.json`.
-2. **Build the index offline:**
+**About the videos.** The development lectures are internal college recordings, which can't be published, so the deployed demo is **text-only**: each citation shows `[Lecture 1, 48:33]`, the quote from that moment, and a note to open the lecture at that time in the course material. Answers, retrieval and refusal work exactly as locally. For openly licensed lectures, put a YouTube link in each entry's `url` in `data/video_meta.json` and re-package; citations then embed the player at the cited second.
 
-   ```bash
-   python -m src.rag.build_index --ids <your ids> --extract-missing
-   ```
-3. **Package the Space:**
+1. **Package the Space:**
 
    ```bash
-   python space/prepare_space.py
+   .venv\Scripts\python.exe space\prepare_space.py --allow-internal-videos --license other
    ```
 
-   This creates `build/hf_space/` (code, index, checkpoint, pinned requirements, a Space README with attribution). It refuses lectures marked internal.
-4. **Create the Space.** On huggingface.co, choose **New Space**, SDK **Gradio**, hardware **CPU basic**.
-5. **Push the folder:**
+   This creates `build/hf_space/` with the inference code (an explicit allow-list, so `.env` and `data/` can't leak), the index, the checkpoint, pinned CPU-only requirements and a Space README. By default it **refuses** lectures marked internal; `--allow-internal-videos` is the explicit "we have permission" switch. For openly licensed lectures, drop the flag.
+2. **Optional: test the package locally** (PowerShell, port 7861):
+
+   ```powershell
+   cd build\hf_space
+   $env:GRADIO_SERVER_PORT = "7861"; ..\..\.venv\Scripts\python.exe app.py
+   ```
+3. **Create the Space.** On huggingface.co choose **New Space**, name it `conceptbound`, SDK **Gradio**, hardware **CPU basic (free)**, visibility **Public**.
+4. **Add the key.** Under **Settings → Variables and secrets**, add the **secret** `GROQ_API_KEY` and the **variable** `LLM_PROVIDER=groq`. Secrets are encrypted and injected as environment variables; never commit a key.
+5. **Create a write token** at huggingface.co/settings/tokens (type **Write**). Git asks for it as the password.
+6. **Push the folder:**
 
    ```bash
    cd build/hf_space
-   git init
-   git remote add origin https://huggingface.co/spaces/<user>/conceptbound
-   git add .
-   git commit -m "ConceptBound demo"
-   git push -u origin main
+   git init -b main
+   git remote add origin https://huggingface.co/spaces/<your-username>/conceptbound
+   git add . && git commit -m "ConceptBound demo"
+   git push -u origin main --force
    ```
-6. **Add the key.** Under **Settings → Variables and secrets**, add the secret `GROQ_API_KEY` and the variable `LLM_PROVIDER=groq`.
+
+   `--force` replaces the starter README Hugging Face creates in a new Space.
+7. **Wait for the build** (about 5–10 minutes). When the page shows **Running**, the demo is live at `https://huggingface.co/spaces/<your-username>/conceptbound`.
+
+**To update the live site,** re-run step 1, then `git add . && git commit -m "Update" && git push` inside `build/hf_space`.
+
+**Good to know:**
+- Groq's free tier allows 8,000 tokens per minute, shared by all visitors. Under heavy use, some visitors get the "showing the most relevant lecture moments" fallback.
+- A free Space sleeps after about 48 hours without visitors; the next visitor waits about a minute.
+- If the build fails, the Space's **Logs** tab shows the error.
+
+The full deployment write-up (design decisions, alternatives considered, checklist) is in [DEVLOG.md, Part IV](DEVLOG.md#part-iv-deployment).
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `Groq request failed (HTTP 404) … model_not_found` | Groq retired the model. The client now switches automatically; remove any old `LLM_MODEL` line from `.env` and **restart the app** (a running app keeps its old code). |
+| "The language model is unavailable … rate limit (HTTP 429)" | Groq's free tier limit (8,000 tokens per minute). Wait a minute; the app shows the most relevant moments meanwhile. |
+| "No LLM is configured" | Add `LLM_PROVIDER` and `GROQ_API_KEY` to `.env`, then restart. |
+| `ConnectionResetError [WinError 10054]` in the terminal | Harmless Windows message when a browser drops a connection; silenced in the demo. |
+| Port 7860 already in use | Another copy is running. Close it or set `GRADIO_SERVER_PORT=7861`. |
+| `RAG pipeline not available` from the API | Build the index: `python -m src.rag.build_index`. |
 
 ## Data, privacy and licensing
 
 - **Development recordings are private.** They are classroom recordings from the authors' college and are not distributed. Videos, features, transcripts, indexes and checkpoints are excluded by `.gitignore`.
 - **Students are visible and audible.** Annotate a `lecture_span` so indexing drops pre-class chatter and attendance roll calls.
-- **Public demos need openly licensed lectures,** with attribution, which `space/prepare_space.py` writes into the Space README.
+- **Public demos need openly licensed lectures or written permission.** `space/prepare_space.py` refuses internal lectures unless `--allow-internal-videos` is passed, and never ships video files; it writes per-lecture attribution into the Space README.
+- **The deployed index contains transcripts,** so anything said in class (including by students) inside the lecture span can appear in answers.
 
 ## Limitations and roadmap
 
@@ -408,7 +468,7 @@ The free CPU tier is enough.
 
 | File | What's inside |
 |---|---|
-| [DEVLOG.md](DEVLOG.md) | How everything works and why, the day-by-day build log, results, lessons, interview Q&A |
+| [DEVLOG.md](DEVLOG.md) | How to run it, how everything works and why (with key source code), deployment, the day-by-day build log, results, lessons, interview Q&A |
 | [docs/ANNOTATION_GUIDELINES.md](docs/ANNOTATION_GUIDELINES.md) | How to annotate lectures |
 | [eval/README.md](eval/README.md) | The evaluation set and how to verify it |
 | [reports/eval_results.md](reports/eval_results.md) | Latest measured results |

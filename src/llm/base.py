@@ -38,6 +38,7 @@ class LLMTimeoutError(LLMError):
 class LLMClient(ABC):
     name: str = "base"
     model: str = ""
+    last_stats: Dict = {}  # filled by HTTP providers: request_ms, attempts, rate_limited
 
     @abstractmethod
     def complete(self, system: str, user: str, json_mode: bool = True) -> str:
@@ -45,11 +46,22 @@ class LLMClient(ABC):
 
 
 def post_json(url: str, payload: Dict, headers: Optional[Dict] = None, timeout: float = 30.0,
-              retries: int = 3, backoff: float = 1.5, provider: str = "LLM") -> Dict:
+              retries: Optional[int] = None, backoff: float = 1.5, provider: str = "LLM",
+              stats: Optional[Dict] = None) -> Dict:
     """POST JSON with timeout + retries (429 / 5xx / timeout), exponential
-    backoff with jitter, honouring Retry-After when the server sends it."""
+    backoff with jitter, honouring Retry-After when the server sends it.
+
+    If `stats` is given it is filled with: request_ms (duration of the
+    successful attempt only), attempts, and rate_limited (number of 429s), so
+    callers can separate model latency from time spent waiting on limits."""
+    import os
+    retries = int(os.environ.get("LLM_RETRIES", "3")) if retries is None else retries
+    stats = stats if stats is not None else {}
+    stats.update({"attempts": 0, "rate_limited": 0, "request_ms": None})
     last_err = None
     for attempt in range(retries + 1):
+        stats["attempts"] = attempt + 1
+        t0 = time.perf_counter()
         try:
             r = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
         except requests.Timeout as e:
@@ -58,10 +70,12 @@ def post_json(url: str, payload: Dict, headers: Optional[Dict] = None, timeout: 
             last_err = LLMError(f"Could not reach {provider}: {e}")
         else:
             if r.status_code == 200:
+                stats["request_ms"] = (time.perf_counter() - t0) * 1000
                 return r.json()
             if r.status_code in (401, 403):
                 raise LLMError(f"{provider} rejected the API key (HTTP {r.status_code}). Check the key in your environment.")
             if r.status_code == 429:
+                stats["rate_limited"] += 1
                 last_err = RateLimitError(f"{provider} rate limit hit (HTTP 429). Wait a minute or use another provider.")
                 retry_after = r.headers.get("Retry-After")
                 if retry_after and retry_after.isdigit() and attempt < retries:

@@ -65,7 +65,9 @@ class GroqClient(LLMClient):
                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        data = post_json(self.URL, payload, {"Authorization": f"Bearer {self.api_key}"}, _timeout(), provider="Groq")
+        self.last_stats = {}
+        data = post_json(self.URL, payload, {"Authorization": f"Bearer {self.api_key}"}, _timeout(),
+                         provider="Groq", stats=self.last_stats)
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as e:
@@ -88,8 +90,9 @@ class GeminiClient(LLMClient):
                    "generationConfig": {"temperature": 0.0}}
         if json_mode:
             payload["generationConfig"]["responseMimeType"] = "application/json"
+        self.last_stats = {}
         data = post_json(self.URL.format(model=self.model), payload, {"x-goog-api-key": self.api_key},
-                         _timeout(), provider="Gemini")
+                         _timeout(), provider="Gemini", stats=self.last_stats)
         try:
             return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
         except (KeyError, IndexError) as e:
@@ -108,7 +111,9 @@ class OllamaClient(LLMClient):
                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
         if json_mode:
             payload["format"] = "json"
-        data = post_json(f"{self.host}/api/chat", payload, timeout=max(_timeout(), 120), provider="Ollama")
+        self.last_stats = {}
+        data = post_json(f"{self.host}/api/chat", payload, timeout=max(_timeout(), 120), provider="Ollama",
+                         stats=self.last_stats)
         return data.get("message", {}).get("content", "")
 
 

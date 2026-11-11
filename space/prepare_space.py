@@ -82,6 +82,22 @@ def main():
                 os.path.join(OUT, "checkpoints", "stage2_retrieval_model.pt"))
 
     vm = json.load(open(os.path.join(ROOT, "data", "video_meta.json"), encoding="utf-8"))
+
+    # Video files are too large for a Space, so citations play from the URLs in
+    # data/video_meta.json (e.g. unlisted YouTube). Refresh them here so adding
+    # a link does not require rebuilding the index.
+    meta_path = os.path.join(OUT, "rag_index", "segments_metadata.json")
+    for m in meta:
+        url = (vm.get(m["video_id"]) or {}).get("url") if isinstance(vm.get(m["video_id"]), dict) else None
+        if url:
+            m["url"], m["is_youtube"] = url, "youtu" in url
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+    no_url = sorted({m["video_id"] for m in meta if "youtu" not in m.get("url", "")})
+    if no_url:
+        print(f"Note: no YouTube URL in data/video_meta.json for {no_url}; their citations will show "
+              f"text only (the video files are not shipped to the Space).")
+
     attribution = "\n".join(f"- {vm.get(v, {}).get('title', v)}: {vm.get(v, {}).get('attribution', '?')} "
                             f"({vm.get(v, {}).get('license', 'license?')}) {vm.get(v, {}).get('url', '')}" for v in vids)
     with open(os.path.join(OUT, "README.md"), "w", encoding="utf-8") as f:

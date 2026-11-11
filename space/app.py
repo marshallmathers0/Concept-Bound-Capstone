@@ -81,7 +81,8 @@ def player(c) -> str:
     if os.path.exists(local):
         src = f"/gradio_api/file={local.replace(os.sep, '/')}#t={start}"
         return f'<video width="100%" height="220" controls preload="metadata" src="{src}"></video>'
-    return f"<i>Video file not available in this deployment ({html.escape(c.display)}).</i>"
+    return (f"<i>📍 {html.escape(c.display)}: the recordings are not public, so open this lecture "
+            f"at the timestamp in your course material.</i>")
 
 
 def render_citations(resp) -> str:
@@ -110,7 +111,7 @@ def ask(question, history, use_reranker, show_retrieved):
         answer = f"_{answer}_"
     if resp.rewritten_query != question:
         answer += f"\n\n<sub>Follow-up interpreted as: “{html.escape(resp.rewritten_query)}”</sub>"
-    lat = " | ".join(f"{k.replace('_ms', '')}: {v:.0f} ms" for k, v in resp.latency_ms.items())
+    lat = " | ".join(f"{k.replace('_ms', '')}: {v:.0f} ms" for k, v in resp.latency_ms.items() if k.endswith("_ms"))
     lat = f"<sub>{LLM_STATUS} — confidence {resp.confidence:.2f} — {lat}</sub>"
     rows = [[r.segment_id, r.title, r.timestamp, round(r.retrieval_score, 3),
              None if r.rerank_score is None else round(r.rerank_score, 2), r.snippet] for r in resp.retrieved]

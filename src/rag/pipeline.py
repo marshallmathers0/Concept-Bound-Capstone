@@ -76,6 +76,10 @@ class RAGPipeline:
             return respond(f"The language model is unavailable ({e}). Showing the most relevant lecture moments.",
                            cites, "llm_error", error=str(e))
         lat["llm_ms"] = (time.perf_counter() - t) * 1000
+        st = getattr(self.llm, "last_stats", None) or {}
+        if st.get("request_ms") is not None:
+            lat["llm_request_ms"] = st["request_ms"]          # model time only
+            lat["llm_rate_limited"] = float(st.get("rate_limited", 0))  # 429s hit on the way
 
         parsed, err = parse_llm_output(raw)
         if parsed is None:

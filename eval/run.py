@@ -100,18 +100,23 @@ def calibrate(search, qs, rerank):
             "conf_out_of_scope": [round(c, 3) for q, c, _ in scored if not q["in_scope"]]}
 
 
-def generation_eval(pipeline, judge_llm, qs):
+def generation_eval(pipeline, judge_llm, qs, pause=0.0):
     from eval.judge import judge_faithfulness
-    out, lat = [], {"retrieval_ms": [], "rerank_ms": [], "llm_ms": [], "total_ms": []}
-    for q in qs:
+    out, lat = [], {"retrieval_ms": [], "rerank_ms": [], "llm_request_ms": [], "llm_ms": [], "total_ms": []}
+    rate_limited = 0
+    for i, q in enumerate(qs):
+        if i and pause:
+            time.sleep(pause)  # stay under the provider's tokens-per-minute limit
         r = pipeline.ask(q["question"])
+        rate_limited += int(r.latency_ms.get("llm_rate_limited", 0))
         for k in lat:
             if k in r.latency_ms:
                 lat[k].append(r.latency_ms[k])
         cited = {c.segment_id for c in r.citations}
         row = {"id": q["id"], "in_scope": q["in_scope"], "mode": r.mode, "refused": r.refused,
-               "cites_gold": bool(cited & q["gold"]) if q["in_scope"] and not r.refused else None,
-               "n_dropped_citations": len(r.dropped_citations)}
+               # only genuine grounded answers count (not error fallbacks that list retrieved moments)
+               "cites_gold": bool(cited & q["gold"]) if q["in_scope"] and r.mode == "rag" else None,
+               "n_dropped_citations": len(r.dropped_citations), "error": r.error}
         if r.mode == "rag":
             hits = [pipeline.search.by_id[c.segment_id] for c in r.citations]
             try:
@@ -121,7 +126,7 @@ def generation_eval(pipeline, judge_llm, qs):
                 row["judge_error"] = str(e)
         out.append(row)
     ins = [r for r in out if r["in_scope"]]
-    answered = [r for r in ins if not r["refused"]]
+    answered = [r for r in ins if r["mode"] == "rag"]
     oos = [r for r in out if not r["in_scope"]]
     faith = [r["faithfulness"] for r in out if r.get("faithfulness") is not None]
     return {
@@ -131,6 +136,8 @@ def generation_eval(pipeline, judge_llm, qs):
         "false_refusal_in_scope": float(np.mean([r["refused"] for r in ins])) if ins else None,
         "faithfulness": float(np.mean(faith)) if faith else None, "n_judged": len(faith),
         "dropped_citations_total": int(sum(r["n_dropped_citations"] for r in out)),
+        "llm_errors": sum(r["mode"] == "llm_error" for r in out), "rate_limited_calls": rate_limited,
+        "judge_errors": sum(1 for r in out if r.get("judge_error")),
         "latency": {k: percentiles(v) for k, v in lat.items() if v}, "rows": out,
     }
 
@@ -178,7 +185,10 @@ def write_report(res, path_md):
               f"| Refusal accuracy on out-of-scope questions | {fmt(g['refusal_accuracy_oos'])} |",
               f"| In-scope questions wrongly refused | {fmt(g['false_refusal_in_scope'])} |",
               f"| Faithfulness (LLM-as-judge, {g['n_judged']} answers) | {fmt(g['faithfulness'])} |",
-              f"| Hallucinated citations dropped by validation | {g['dropped_citations_total']} |", ""]
+              f"| Hallucinated citations dropped by validation | {g['dropped_citations_total']} |",
+              f"| LLM errors after retries / rate-limit retries / judge errors | {g['llm_errors']} / {g['rate_limited_calls']} / {g['judge_errors']} |", "",
+              f"Model: {res.get('llm_model', '?')}. `llm_request_ms` is the model's own response time; `llm_ms` "
+              "also includes any waiting for the provider's rate limit.", ""]
         L += ["| Stage | p50 (ms) | p95 (ms) |", "|---|---|---|"] + \
              [f"| {k} | {v['p50']:.0f} | {v['p95']:.0f} |" for k, v in g["latency"].items()]
     L += ["", "## Notes", "",
@@ -197,6 +207,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--questions", default=QUESTIONS)
     ap.add_argument("--no-generation", action="store_true")
+    ap.add_argument("--llm-pause", type=float, default=45.0,
+                    help="Seconds between questions in the generation eval (Groq free tier: 8k tokens/min).")
     args = ap.parse_args()
     os.makedirs(REPORTS, exist_ok=True)
 
@@ -237,7 +249,9 @@ def main():
     else:
         print(f"Generation eval with {llm.name}:{llm.model} ...", flush=True)
         test_qs = [q for q in qs if dev_test_split(q) == "test" and (q["gold"] or not q["in_scope"])]
-        res["generation"] = generation_eval(RAGPipeline(search, llm), llm, test_qs)
+        res["llm_model"] = f"{llm.name}:{llm.model}"
+        os.environ.setdefault("LLM_RETRIES", "6")
+        res["generation"] = generation_eval(RAGPipeline(search, llm), llm, test_qs, pause=args.llm_pause)
 
     def default(o):
         return sorted(o) if isinstance(o, set) else str(o)
