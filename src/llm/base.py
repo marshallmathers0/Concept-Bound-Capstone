@@ -56,6 +56,7 @@ def post_json(url: str, payload: Dict, headers: Optional[Dict] = None, timeout: 
     callers can separate model latency from time spent waiting on limits."""
     import os
     retries = int(os.environ.get("LLM_RETRIES", "3")) if retries is None else retries
+    max_wait = float(os.environ.get("LLM_MAX_WAIT", "30"))  # longest Retry-After we are willing to sleep
     stats = stats if stats is not None else {}
     stats.update({"attempts": 0, "rate_limited": 0, "request_ms": None})
     last_err = None
@@ -78,8 +79,19 @@ def post_json(url: str, payload: Dict, headers: Optional[Dict] = None, timeout: 
                 stats["rate_limited"] += 1
                 last_err = RateLimitError(f"{provider} rate limit hit (HTTP 429). Wait a minute or use another provider.")
                 retry_after = r.headers.get("Retry-After")
-                if retry_after and retry_after.isdigit() and attempt < retries:
-                    time.sleep(min(float(retry_after), 30.0))
+                wait = float(retry_after) if retry_after and retry_after.replace(".", "", 1).isdigit() else None
+                last_err.retry_after = wait
+                if "per day" in r.text:
+                    last_err = RateLimitError(f"{provider}'s daily token quota is used up (it resets over the "
+                                              f"next 24 h). Use another model or provider.")
+                    last_err.retry_after = wait
+                if "per day" in r.text or (wait is not None and wait > max_wait):
+                    # A daily quota (or a wait longer than the caller accepts) will not clear by
+                    # retrying now: fail fast so the caller can switch model or degrade.
+                    stats["daily_limit"] = "per day" in r.text
+                    raise last_err
+                if wait is not None and attempt < retries:
+                    time.sleep(wait)
                     continue
             elif r.status_code >= 500:
                 last_err = LLMError(f"{provider} server error (HTTP {r.status_code}).")

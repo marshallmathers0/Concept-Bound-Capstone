@@ -39,6 +39,12 @@ if not os.environ.get("RAG_INDEX_DIR"):
     local = os.path.join(ROOT, "rag_index")
     os.environ["RAG_INDEX_DIR"] = local if os.path.isdir(local) else os.path.join(ROOT, "data", "rag_index")
 
+# Interactive use: never keep a visitor waiting on rate-limit retries. One quick retry,
+# no sleeping longer than 8 s; after that the Groq client switches model, and if every
+# model is exhausted the page shows the ranked lecture moments instead.
+os.environ.setdefault("LLM_RETRIES", "1")
+os.environ.setdefault("LLM_MAX_WAIT", "8")
+
 import gradio as gr  # noqa: E402
 
 from src.llm.factory import get_llm_client  # noqa: E402
@@ -112,7 +118,13 @@ def ask(question, history, use_reranker, show_retrieved):
     if resp.rewritten_query != question:
         answer += f"\n\n<sub>Follow-up interpreted as: “{html.escape(resp.rewritten_query)}”</sub>"
     lat = " | ".join(f"{k.replace('_ms', '')}: {v:.0f} ms" for k, v in resp.latency_ms.items() if k.endswith("_ms"))
-    lat = f"<sub>{LLM_STATUS} — confidence {resp.confidence:.2f} — {lat}</sub>"
+    if resp.latency_ms.get("llm_cached"):
+        source = "cached answer"
+    elif resp.mode == "rag":
+        source = f"answered by {(getattr(LLM, 'last_stats', None) or {}).get('model', LLM.model)}"
+    else:
+        source = LLM_STATUS
+    lat = f"<sub>{source} — confidence {resp.confidence:.2f} — {lat}</sub>"
     rows = [[r.segment_id, r.title, r.timestamp, round(r.retrieval_score, 3),
              None if r.rerank_score is None else round(r.rerank_score, 2), r.snippet] for r in resp.retrieved]
     history = (history + [{"role": "user", "content": question},

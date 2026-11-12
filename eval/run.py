@@ -251,7 +251,7 @@ def main():
         test_qs = [q for q in qs if dev_test_split(q) == "test" and (q["gold"] or not q["in_scope"])]
         res["llm_model"] = f"{llm.name}:{llm.model}"
         os.environ.setdefault("LLM_RETRIES", "6")
-        res["generation"] = generation_eval(RAGPipeline(search, llm), llm, test_qs, pause=args.llm_pause)
+        res["generation"] = generation_eval(RAGPipeline(search, llm, cache_size=0), llm, test_qs, pause=args.llm_pause)
 
     def default(o):
         return sorted(o) if isinstance(o, set) else str(o)

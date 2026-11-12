@@ -104,3 +104,14 @@ def test_parse_malformed_returns_error_not_exception():
 def test_pipeline_handles_malformed_llm_output(fake_search):
     r = RAGPipeline(fake_search, MockLLMClient(["I think the answer is 42"])).ask("q")
     assert r.mode == "llm_error" and "parse failure" in r.error and r.citations
+
+
+def test_repeated_question_reuses_cached_answer(fake_search):
+    llm = MockLLMClient([json.dumps({"answer": "Topic one [S1].", "citations": ["S1"], "covered": True})] * 2)
+    calls = []
+    orig = llm.complete
+    llm.complete = lambda *a, **k: calls.append(1) or orig(*a, **k)
+    pipe = RAGPipeline(fake_search, llm)
+    first, second = pipe.ask("what is topic one?"), pipe.ask("what is topic one?")
+    assert len(calls) == 1 and first.answer == second.answer and second.latency_ms.get("llm_cached") == 1.0
+    assert len(RAGPipeline(fake_search, llm, cache_size=0)._cache) == 0

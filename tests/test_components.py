@@ -102,3 +102,35 @@ def test_groq_switches_to_available_model_when_retired(monkeypatch):
     c = providers.GroqClient(model="retired-model", api_key="gsk_test")
     assert c.complete("s", "u") == '{"answer": "ok"}'
     assert c.model == "openai/gpt-oss-20b" and calls == ["retired-model", "openai/gpt-oss-20b"]
+
+
+def test_daily_quota_fails_fast_without_sleeping(monkeypatch):
+    slept = []
+    monkeypatch.setattr(llm_base.time, "sleep", slept.append)
+    body = {"error": {"message": "Rate limit reached ... on tokens per day (TPD): Limit 200000"}}
+    monkeypatch.setattr(llm_base.requests, "post", lambda *a, **k: FakeResp(429, body, {"Retry-After": "900"}))
+    stats = {}
+    with pytest.raises(RateLimitError, match="daily"):
+        post_json("http://x", {}, retries=3, provider="Test", stats=stats)
+    assert slept == [] and stats["attempts"] == 1 and stats["daily_limit"]
+
+
+def test_groq_falls_back_to_another_model_on_rate_limit(monkeypatch):
+    from src.llm import providers
+    monkeypatch.setattr(llm_base.time, "sleep", lambda s: None)
+    monkeypatch.setenv("LLM_FALLBACK_MODELS", "backup-model")
+    calls = []
+    daily = {"error": {"message": "Rate limit reached on tokens per day (TPD)"}}
+
+    def fake_post(url, json=None, **k):
+        calls.append(json["model"])
+        if json["model"] == "main-model":
+            return FakeResp(429, daily)
+        return FakeResp(200, {"choices": [{"message": {"content": '{"answer": "ok"}'}}]})
+
+    monkeypatch.setattr(llm_base.requests, "post", fake_post)
+    c = providers.GroqClient(model="main-model", api_key="gsk_test")
+    assert c.complete("s", "u") == '{"answer": "ok"}' and c.last_stats["model"] == "backup-model"
+    assert c.complete("s", "u") == '{"answer": "ok"}'
+    # The exhausted model is skipped on the next call instead of being asked again.
+    assert calls == ["main-model", "backup-model", "backup-model"]

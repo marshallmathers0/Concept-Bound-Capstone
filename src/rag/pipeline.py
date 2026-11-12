@@ -11,6 +11,7 @@ top segments, so the demo still works with no API key.
 """
 
 import time
+from collections import OrderedDict
 from typing import List, Optional
 
 from src.llm.base import LLMClient, LLMError
@@ -26,9 +27,11 @@ REFUSAL = "This isn't covered in the indexed lectures."
 
 class RAGPipeline:
     def __init__(self, search: SearchService, llm: Optional[LLMClient] = None, mode: str = "hybrid",
-                 candidates: int = 20, context_k: int = 5):
+                 candidates: int = 20, context_k: int = 5, cache_size: int = 256):
         self.search, self.llm, self.mode = search, llm, mode
         self.candidates, self.context_k = candidates, context_k
+        self.cache_size = cache_size
+        self._cache: "OrderedDict[str, str]" = OrderedDict()  # user prompt -> raw LLM output (LRU)
 
     def ask(self, question: str, history: Optional[List] = None, use_reranker: Optional[bool] = None,
             top_k: Optional[int] = None) -> AskResponse:
@@ -67,21 +70,33 @@ class RAGPipeline:
                            "lecture moments instead.", cites, "retrieval_only")
 
         t = time.perf_counter()
+        user_prompt = build_user_prompt(question if query == question else f"{question} (context: {query})", context)
+        cached = self._cache.get(user_prompt)
         try:
-            raw = self.llm.complete(SYSTEM_PROMPT, build_user_prompt(question if query == question else
-                                                                      f"{question} (context: {query})", context))
+            if cached is not None:
+                # Same question over the same retrieved context: temperature 0, so reuse the answer
+                # instead of spending rate-limited tokens again (demo example buttons hit this a lot).
+                raw = cached
+                self._cache.move_to_end(user_prompt)
+                lat["llm_cached"] = 1.0
+            else:
+                raw = self.llm.complete(SYSTEM_PROMPT, user_prompt)
         except LLMError as e:
             lat["llm_ms"] = (time.perf_counter() - t) * 1000
             cites = [make_citation(lbl, h) for lbl, h in labels.items()]
             return respond(f"The language model is unavailable ({e}). Showing the most relevant lecture moments.",
                            cites, "llm_error", error=str(e))
         lat["llm_ms"] = (time.perf_counter() - t) * 1000
-        st = getattr(self.llm, "last_stats", None) or {}
+        st = {} if cached is not None else (getattr(self.llm, "last_stats", None) or {})
         if st.get("request_ms") is not None:
             lat["llm_request_ms"] = st["request_ms"]          # model time only
             lat["llm_rate_limited"] = float(st.get("rate_limited", 0))  # 429s hit on the way
 
         parsed, err = parse_llm_output(raw)
+        if parsed is not None and cached is None:
+            self._cache[user_prompt] = raw
+            while len(self._cache) > self.cache_size:
+                self._cache.popitem(last=False)
         if parsed is None:
             cites = [make_citation(lbl, h) for lbl, h in labels.items()]
             return respond("The model's answer could not be parsed, so here are the most relevant lecture "
