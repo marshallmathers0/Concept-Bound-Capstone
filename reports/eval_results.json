@@ -1,5 +1,5 @@
 {
-  "run_at": "2026-11-04T23:35:56",
+  "run_at": "2026-11-11T23:23:30",
   "index": {
     "built_at": "2026-11-04T23:26:15",
     "videos": [
@@ -3735,32 +3735,32 @@
   },
   "retrieval_latency": {
     "BM25 only": {
-      "p50": 7.888449999882141,
-      "p95": 9.244249999937892
+      "p50": 7.2851000004448,
+      "p95": 9.837575000346988
     },
     "Dense (Sentence-BERT) only": {
-      "p50": 12.010349999854952,
-      "p95": 14.228624999532258
+      "p50": 11.667699998724856,
+      "p95": 14.464874999248423
     },
     "Dense (fusion encoder) only": {
-      "p50": 11.935900000025867,
-      "p95": 14.46344999953908
+      "p50": 12.400399999023648,
+      "p95": 16.344350001418206
     },
     "Hybrid (BM25 + Sentence-BERT)": {
-      "p50": 12.258449999990262,
-      "p95": 14.347125000313099
+      "p50": 12.04304999919259,
+      "p95": 14.09964999766089
     },
     "Current app mode ('auto')": {
-      "p50": 19.33850000023085,
-      "p95": 22.4065000002156
+      "p50": 19.217449998905067,
+      "p95": 22.81797499927052
     },
     "Hybrid + reranker, OCR-first input (original)": {
-      "p50": 2466.2870499996643,
-      "p95": 3817.1635249998417
+      "p50": 997.4460500015994,
+      "p95": 1039.2288500006543
     },
     "Hybrid + reranker, transcript-first input": {
-      "p50": 1840.0915500001247,
-      "p95": 2282.5907250003183
+      "p50": 878.4501499994803,
+      "p95": 1038.6043249973227
     }
   },
   "refusal": {
@@ -3911,5 +3911,465 @@
       ]
     }
   },
-  "generation_skipped": "no LLM provider configured on this machine (no GROQ_API_KEY / GEMINI_API_KEY / Ollama)"
+  "llm_model": "groq:openai/gpt-oss-20b",
+  "generation": {
+    "citation_accuracy": 1.0,
+    "n_answered_in_scope": 6,
+    "n_in_scope": 42,
+    "refusal_accuracy_oos": 1.0,
+    "false_refusal_in_scope": 0.047619047619047616,
+    "faithfulness": 0.7333333333333334,
+    "n_judged": 3,
+    "dropped_citations_total": 0,
+    "llm_errors": 34,
+    "rate_limited_calls": 16,
+    "judge_errors": 3,
+    "latency": {
+      "retrieval_ms": {
+        "p50": 22.55,
+        "p95": 62.0
+      },
+      "rerank_ms": {
+        "p50": 942.35,
+        "p95": 2146.625
+      },
+      "llm_request_ms": {
+        "p50": 1602.55,
+        "p95": 2153.175
+      },
+      "llm_ms": {
+        "p50": 183358.45,
+        "p95": 185659.19999999995
+      },
+      "total_ms": {
+        "p50": 184109.5,
+        "p95": 186165.52500000002
+      }
+    },
+    "rows": [
+      {
+        "id": "d01",
+        "in_scope": true,
+        "mode": "rag",
+        "refused": false,
+        "cites_gold": true,
+        "n_dropped_citations": 0,
+        "error": null,
+        "faithfulness": 1.0
+      },
+      {
+        "id": "d03",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq request failed (HTTP 400): {\"error\":{\"message\":\"Failed to validate JSON. Please adjust your prompt. See 'failed_generation' for more details.\",\"type\":\"invalid_request_error\",\"code\":\"json_validate_failed\",\"failed_generation\":\"\"}}\n"
+      },
+      {
+        "id": "d05",
+        "in_scope": true,
+        "mode": "rag",
+        "refused": false,
+        "cites_gold": true,
+        "n_dropped_citations": 0,
+        "error": null,
+        "faithfulness": 0.2
+      },
+      {
+        "id": "d07",
+        "in_scope": true,
+        "mode": "rag",
+        "refused": false,
+        "cites_gold": true,
+        "n_dropped_citations": 0,
+        "error": null,
+        "faithfulness": 1.0
+      },
+      {
+        "id": "d09",
+        "in_scope": true,
+        "mode": "rag",
+        "refused": false,
+        "cites_gold": true,
+        "n_dropped_citations": 0,
+        "error": null,
+        "faithfulness": null,
+        "judge_error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d10",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d12",
+        "in_scope": true,
+        "mode": "rag",
+        "refused": false,
+        "cites_gold": true,
+        "n_dropped_citations": 0,
+        "error": null,
+        "faithfulness": null,
+        "judge_error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d14",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d16",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d18",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d21",
+        "in_scope": true,
+        "mode": "rag",
+        "refused": false,
+        "cites_gold": true,
+        "n_dropped_citations": 0,
+        "error": null,
+        "faithfulness": null,
+        "judge_error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d23",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d25",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d27",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d29",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d30",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d32",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d34",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d36",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d38",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d41",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d43",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d45",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d47",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "d49",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h01",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h02",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h03",
+        "in_scope": true,
+        "mode": "refused",
+        "refused": true,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": null
+      },
+      {
+        "id": "h04",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h05",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h06",
+        "in_scope": true,
+        "mode": "refused",
+        "refused": true,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": null
+      },
+      {
+        "id": "h07",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h08",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h09",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h10",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Groq rate limit hit (HTTP 429). Wait a minute or use another provider."
+      },
+      {
+        "id": "h11",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "h12",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "h13",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "h14",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "h15",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "h16",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "h17",
+        "in_scope": true,
+        "mode": "llm_error",
+        "refused": false,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": "Could not reach Groq: HTTPSConnectionPool(host='api.groq.com', port=443): Max retries exceeded with url: /openai/v1/chat/completions (Caused by NameResolutionError(\"HTTPSConnection(host='api.groq.com', port=443): Failed to resolve 'api.groq.com' ([Errno 11001] getaddrinfo failed)\"))"
+      },
+      {
+        "id": "o02",
+        "in_scope": false,
+        "mode": "refused",
+        "refused": true,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": null
+      },
+      {
+        "id": "o04",
+        "in_scope": false,
+        "mode": "refused",
+        "refused": true,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": null
+      },
+      {
+        "id": "o06",
+        "in_scope": false,
+        "mode": "refused",
+        "refused": true,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": null
+      },
+      {
+        "id": "o08",
+        "in_scope": false,
+        "mode": "refused",
+        "refused": true,
+        "cites_gold": null,
+        "n_dropped_citations": 0,
+        "error": null
+      }
+    ]
+  }
 }
